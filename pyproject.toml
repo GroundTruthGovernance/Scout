@@ -36,6 +36,7 @@ scout = "scout.app.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+"scout.core" = ["*.sql"]
 "scout.webmap" = ["*.html", "*.js", "*.css", "vendor/*"]
 
 [tool.pytest.ini_options]
