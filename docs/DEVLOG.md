@@ -8,6 +8,24 @@ green Windows runs in a row now — the QtWebEngine teardown fix from
 earlier is holding. Continuing into the remaining Task #9 scope: a
 "Save as Latent Signature" action, then a session-report composer.
 
+### Latent Signature save action
+
+`Run > Save Run as Latent Signature…` — enabled only after a successful
+AE run (needs `self._last_similarity_result`, the raw `SimilarityResult`
+kept from `run_ae_similarity()` specifically so this doesn't need a
+second EE round trip). Materializing the vector via `.getInfo()` on
+`raw_vector_list`/`vector_norm` is the same "it's just a computation graph
+node until something calls getInfo()" pattern as `commit_current_sample()`
+in the original GEE JS. Added a `vector_norm` column to
+`latent_signatures` (schema.sql + `LatentSignature` dataclass) — it was
+missing from the original schema design pass despite every other vector
+table (`ae_vectors`) storing norm alongside the raw values; caught this
+while wiring the save action rather than stuffing the norm into
+`derivation_note` as a workaround. `_compute_similarity_tile_url()` now
+returns `(tile_url, SimilarityResult)` instead of just the URL — the
+batch queue call site ignores the second value, which cost nothing to
+support. 100/100 tests passing.
+
 Running log of what's been built, in what order, and why — kept so an
 autonomous or resumed session can pick up accurately without re-deriving
 context, and so you have a readable trail of the overnight build.

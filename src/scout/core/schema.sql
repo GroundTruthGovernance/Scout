@@ -260,6 +260,7 @@ CREATE TABLE IF NOT EXISTS latent_signatures (
     label                   TEXT NOT NULL,
     source_type             TEXT NOT NULL CHECK (source_type IN ('drawn', 'imported', 'derived')),
     vector_json             TEXT NOT NULL,
+    vector_norm             REAL,
     origin_sample_id        TEXT REFERENCES samples(sample_id),
     origin_geometry_geojson TEXT,   -- nullable: imported/derived signatures may have no location
     caption                 TEXT,

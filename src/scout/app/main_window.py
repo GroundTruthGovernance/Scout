@@ -17,6 +17,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from scout.core import repository as repo
-from scout.core.models import Pin
+from scout.core.models import LatentSignature, Pin
 from scout.core.power import perform_power_action
 from scout.core.util import get_ae_vis, utc_now_iso
 from scout._version import SCOUT_VERSION
@@ -49,6 +50,8 @@ class MainWindow(QMainWindow):
         self.context = context or ProjectContext()
         self._current_response_layer_id: str | None = None
         self._ee_sign_in_worker: EarthEngineSignInWorker | None = None
+        self._last_similarity_result = None
+        self._last_reference_geometry_geojson: str | None = None
 
         self.map_panel = MapPanel(self)
         self.setCentralWidget(self.map_panel)
@@ -127,6 +130,8 @@ class MainWindow(QMainWindow):
         # Run
         self.action_run_ae = QAction("&Run AE Similarity", self)
         self.action_run_ae.setEnabled(False)  # enabled once a polygon exists
+        self.action_save_latent_signature = QAction("Save Run as &Latent Signature…", self)
+        self.action_save_latent_signature.setEnabled(False)  # enabled once a run has produced a vector
 
         # Batch
         self.action_add_to_queue = QAction("&Add Current Run to Queue", self)
@@ -177,6 +182,7 @@ class MainWindow(QMainWindow):
 
         run_menu = menu_bar.addMenu("&Run")
         run_menu.addAction(self.action_run_ae)
+        run_menu.addAction(self.action_save_latent_signature)
 
         batch_menu = menu_bar.addMenu("&Batch")
         batch_menu.addAction(self.action_add_to_queue)
@@ -229,6 +235,7 @@ class MainWindow(QMainWindow):
         self.action_sign_out_ee.triggered.connect(self._sign_out_of_earth_engine)
         self.action_add_to_queue.triggered.connect(self._add_current_run_to_queue)
         self.batch_queue_panel.run_queue_requested.connect(self.run_batch_queue)
+        self.action_save_latent_signature.triggered.connect(self._save_as_latent_signature)
 
         self.map_panel.bridge.polygon_drawn.connect(self._on_polygon_drawn)
         self.map_panel.bridge.point_clicked.connect(self._on_point_clicked)
@@ -342,10 +349,12 @@ class MainWindow(QMainWindow):
             "mask_opacity": exploration.mask_opacity,
         }
 
-    def _compute_similarity_tile_url(self, geojson_text: str, recipe: dict) -> str:
+    def _compute_similarity_tile_url(self, geojson_text: str, recipe: dict) -> tuple[str, object]:
         """Shared by the interactive Run AE button and the batch queue —
         everything from "reference geometry" to "a tile URL ready to add
-        to the map" lives here exactly once."""
+        to the map" lives here exactly once. Also returns the raw
+        SimilarityResult (reference vector + norm) so a caller can save it
+        as a Latent Signature without a second EE round trip."""
         ee = self.context.ee.ee
         reference_geometry = ee.Geometry(json.loads(geojson_text))
         search_geometry = self.context.ee.get_search_geometry(
@@ -367,7 +376,7 @@ class MainWindow(QMainWindow):
 
         vis_params = get_ae_vis(cutoff_for_vis, recipe["mask_display_style"], recipe["mask_color"])
         map_id = ee.Image(masked).getMapId(vis_params)
-        return map_id["tile_fetcher"].url_format
+        return map_id["tile_fetcher"].url_format, result
 
     def run_ae_similarity(self) -> None:
         geojson_text = self.context.exploration.reference_geometry_geojson
@@ -381,7 +390,7 @@ class MainWindow(QMainWindow):
         try:
             self.set_status("Calculating AE similarity…")
             recipe = self._exploration_recipe()
-            tile_url_template = self._compute_similarity_tile_url(geojson_text, recipe)
+            tile_url_template, similarity_result = self._compute_similarity_tile_url(geojson_text, recipe)
 
             layer_id = f"response-preview-{uuid.uuid4().hex[:8]}"
             if self._current_response_layer_id:
@@ -390,12 +399,51 @@ class MainWindow(QMainWindow):
             self.map_panel.add_raster_layer(layer_id, tile_url_template, recipe["mask_opacity"])
             self.layers_panel.add_layer("Responses", layer_id, "Current AE response (unsaved)")
             self._current_response_layer_id = layer_id
+            self._last_similarity_result = similarity_result
+            self._last_reference_geometry_geojson = geojson_text
+            self.action_save_latent_signature.setEnabled(True)
 
             self.set_status("AE response added.")
             self.context.log("info", "AE similarity run completed.")
         except Exception as exc:  # noqa: BLE001 — surfaced to the user, not swallowed
             self.set_status(f"AE run failed: {exc}", error=True)
             self.context.log("error", f"AE run failed: {exc}")
+
+    def _save_as_latent_signature(self) -> None:
+        if self._last_similarity_result is None:
+            self.set_status("Run AE similarity first.", error=True)
+            return
+        if self.context.project is None:
+            self.set_status("Open or create a project before saving a signature.", error=True)
+            return
+
+        label, ok = QInputDialog.getText(self, "Save Latent Signature", "Label:")
+        if not ok or not label.strip():
+            return
+
+        try:
+            # Same "materialize the vector with one EE round trip" pattern
+            # as commit_current_sample() in the GEE prototype — the AE
+            # vector only exists as an EE computation graph node until
+            # something actually calls getInfo() on it.
+            raw_vector = self._last_similarity_result.raw_vector_list.getInfo()
+            vector_norm = self._last_similarity_result.vector_norm.getInfo()
+
+            project_key = self.context.project.project_key
+            next_number = repo.count_all_latent_signatures(self.context.conn, project_key) + 1
+            signature = LatentSignature(
+                signature_id=f"{project_key}-SIG-{next_number:03d}",
+                project_key=project_key, label=label.strip(), source_type="drawn",
+                vector=raw_vector, vector_norm=vector_norm,
+                origin_geometry_geojson=self._last_reference_geometry_geojson,
+                created_utc=utc_now_iso(),
+            )
+            repo.insert_latent_signature(self.context.conn, signature)
+            self.set_status(f"{signature.signature_id} saved.")
+            self.context.log("info", f"{signature.signature_id} saved.", related_object_id=signature.signature_id)
+        except Exception as exc:  # noqa: BLE001 — surfaced to the user, not swallowed
+            self.set_status(f"Saving latent signature failed: {exc}", error=True)
+            self.context.log("error", f"Saving latent signature failed: {exc}")
 
     # -- Batch queue -------------------------------------------------------
 

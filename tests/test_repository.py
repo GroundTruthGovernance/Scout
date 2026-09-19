@@ -241,6 +241,23 @@ def test_batch_job_queue_order_and_lifecycle(conn, project):
     assert remaining_queued == []
 
 
+def test_count_all_latent_signatures_ignores_status_but_not_project(conn, project):
+    assert repo.count_all_latent_signatures(conn, project.project_key) == 0
+
+    repo.insert_latent_signature(conn, LatentSignature(
+        signature_id="SIG-1", project_key=project.project_key, label="a",
+        source_type="drawn", vector=[0.1] * 64,
+    ))
+    assert repo.count_all_latent_signatures(conn, project.project_key) == 1
+
+    other_project_key = "SOL-RUG-STW"
+    repo.upsert_project(conn, Project(
+        project_key=other_project_key, project_code="SOL", location_code="RUG",
+        sublocation_code="STW",
+    ))
+    assert repo.count_all_latent_signatures(conn, other_project_key) == 0
+
+
 def test_activity_log_records_and_filters(conn, project):
     repo.log_activity(conn, "Sample SOL-RUG-CRK-F01-S01 saved.", project_key=project.project_key)
     repo.log_activity(conn, "Unrelated project event.", project_key="OTHER-PROJ")

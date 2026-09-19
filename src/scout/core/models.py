@@ -159,6 +159,7 @@ class LatentSignature:
     label: str
     source_type: str   # 'drawn' | 'imported' | 'derived'
     vector: list[float]
+    vector_norm: float | None = None
     origin_sample_id: str | None = None
     origin_geometry_geojson: str | None = None
     caption: str = ""

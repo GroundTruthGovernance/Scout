@@ -328,6 +328,57 @@ def test_run_batch_queue_sleeps_when_confirmed(window, tmp_path, monkeypatch):
     assert power_calls == ["Sleep"]
 
 
+def test_save_latent_signature_requires_prior_run(window, tmp_path):
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window._save_as_latent_signature()
+    assert "run ae" in window.status_bar.currentMessage().lower()
+
+
+def test_save_latent_signature_requires_project(window):
+    window._last_similarity_result = MagicMock()
+    window._save_as_latent_signature()
+    assert "project" in window.status_bar.currentMessage().lower()
+
+
+def test_save_latent_signature_cancelled_dialog_saves_nothing(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window._last_similarity_result = MagicMock()
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("", False)))
+
+    window._save_as_latent_signature()
+    assert repo.list_latent_signatures(window.context.conn, "SOL-RUG-CRK") == []
+
+
+def test_save_latent_signature_creates_row(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window._last_reference_geometry_geojson = json.dumps(
+        {"type": "Polygon", "coordinates": [[[0, 0], [0, 1], [1, 1], [0, 0]]]}
+    )
+    fake_result = MagicMock()
+    fake_result.raw_vector_list.getInfo.return_value = [0.01 * i for i in range(64)]
+    fake_result.vector_norm.getInfo.return_value = 1.23456
+    window._last_similarity_result = fake_result
+
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("Panel core", True)))
+
+    window._save_as_latent_signature()
+
+    sigs = repo.list_latent_signatures(window.context.conn, "SOL-RUG-CRK")
+    assert len(sigs) == 1
+    assert sigs[0]["signature_id"] == "SOL-RUG-CRK-SIG-001"
+    assert sigs[0]["label"] == "Panel core"
+    assert sigs[0]["source_type"] == "drawn"
+    assert sigs[0]["vector_norm"] == 1.23456
+    assert json.loads(sigs[0]["vector_json"]) == [0.01 * i for i in range(64)]
+    assert "signature" in window.status_bar.currentMessage().lower() or "saved" in window.status_bar.currentMessage().lower()
+
+
 def test_draw_polygon_and_add_pin_are_mutually_exclusive(window, tmp_path):
     window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")  # add-pin now requires one
     window.map_panel = MagicMock()

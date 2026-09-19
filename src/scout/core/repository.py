@@ -372,18 +372,26 @@ def insert_latent_signature(conn: sqlite3.Connection, sig: LatentSignature) -> N
         raise ValueError(f"Latent signature vector must have 64 values, got {len(sig.vector)}")
     conn.execute(
         """INSERT INTO latent_signatures
-           (signature_id, project_key, label, source_type, vector_json,
+           (signature_id, project_key, label, source_type, vector_json, vector_norm,
             origin_sample_id, origin_geometry_geojson, caption, tags,
             derivation_note, record_status, created_utc)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             sig.signature_id, sig.project_key, sig.label, sig.source_type,
-            json.dumps(sig.vector), sig.origin_sample_id, sig.origin_geometry_geojson,
+            json.dumps(sig.vector), sig.vector_norm, sig.origin_sample_id, sig.origin_geometry_geojson,
             sig.caption, sig.tags, sig.derivation_note, sig.record_status,
             sig.created_utc or utc_now_iso(),
         ),
     )
     conn.commit()
+
+
+def count_all_latent_signatures(conn: sqlite3.Connection, project_key: str) -> int:
+    """Counts every signature ever inserted regardless of status, for the
+    same collision-avoidance reason as count_all_pins."""
+    return conn.execute(
+        "SELECT COUNT(*) c FROM latent_signatures WHERE project_key = ?", (project_key,)
+    ).fetchone()["c"]
 
 
 def list_latent_signatures(
