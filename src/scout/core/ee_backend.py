@@ -334,3 +334,16 @@ class EarthEngineBackend:
 
     def apply_percentile_threshold(self, similarity_image, threshold_value):
         return similarity_image.updateMask(similarity_image.gte(threshold_value))
+
+    # -- Point sampling (probes) --------------------------------------
+
+    def sample_dynamic_world(self, year, region, scale=10, max_pixels=1e7):
+        """Mean Dynamic World class probabilities over a small region —
+        used for probe pins, matching the JS multi-dataset probe's DW
+        sampling. Returns an ee.Dictionary; call .getInfo() to
+        materialize, same convention as build_reference_vector()."""
+        ee = self.ee
+        dw_image = self.load_dw_year(year, region)
+        return dw_image.reduceRegion(
+            reducer=ee.Reducer.mean(), geometry=region, scale=scale, maxPixels=max_pixels,
+        )

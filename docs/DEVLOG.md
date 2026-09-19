@@ -1,5 +1,47 @@
 # Dev log
 
+## 2026-09-19 — Session 1 continued: probe (multi-dataset) pin extraction
+
+CI for the pin groups/tags commit (59ed04c) confirmed green — sixth
+consecutive since the teardown fix. Closed the last "schema-only" item
+flagged in the Task 9 closing summary: probe pins.
+
+- `EarthEngineBackend.sample_dynamic_world()` — new, mirrors
+  `build_reference_vector()`'s convention (returns a lazy `ee.Dictionary`,
+  caller materializes via `.getInfo()`).
+- `Sample > Add Probe` — a third mutually-exclusive drawing-tool action
+  alongside Draw Polygon / Add Pin, gated on both an open project *and*
+  EE sign-in (a probe genuinely can't do anything useful without both,
+  unlike an observation pin which only needs a project). `MainWindow`
+  tracks which pin tool is armed (`_armed_pin_mode`) since the map layer
+  itself only knows "point mode," not which kind of pin that click should
+  become — that distinction is a UI-level concern, not something to push
+  into `webmap/map.js`.
+- Clicking in probe mode (`_save_probe_pin`) samples a 5 m buffer around
+  the point: AE 64-D + norm (reusing `build_reference_vector` — it's just
+  "mean AE vector for this year/geometry," not something reference-run-
+  specific despite the name), Dynamic World, and Sentinel-2
+  features/indices *if* any scenes exist for a fixed summer date range —
+  matching the original JS probe's default season, checked via
+  `.size().getInfo()` before bothering to build the composite. Saved as
+  `pin_type='probe'` with its own `PRB-NNN` sequence.
+- **Deliberately fixed, not configurable yet**: 5 m buffer, mean reducer,
+  current reference year, summer season for S2. The original GEE
+  prototype exposed all of these as dropdowns; wiring that UI is a
+  reasonable next step but didn't block getting the actual sampling
+  pipeline correct and tested first.
+- Two thorough test cases exercise both real branches of the S2
+  scene-count check (0 scenes → `s2_values` stays `None`; 3 scenes → the
+  full feature/indices dict is sampled and stored) against a mocked `ee`
+  module, plus a failure-path test confirming a mid-sample EE error is
+  surfaced to the status bar rather than silently swallowed.
+- **139/139 tests passing, exit code 0 confirmed.**
+
+With this, every `pin_type` the schema defines now runs end to end. The
+schema-only backlog from the Task 9 closing summary is down to one item:
+a figure-capture action for the report composer (needs new map-screenshot
+infrastructure this build doesn't have).
+
 ## 2026-09-19 — Session 1 continued: pin groups + tags, and a real gap closed
 
 Task #10 (opened after Task #9's close, since this was flagged as

@@ -158,6 +158,19 @@ def test_apply_absolute_threshold_masks_by_gte(backend):
     similarity.updateMask.assert_called_once_with(similarity.gte.return_value)
 
 
+def test_sample_dynamic_world_uses_mean_reducer_and_dw_collection(backend, mock_ee):
+    region = MagicMock(name="region")
+    backend.sample_dynamic_world("2023", region)
+
+    mock_ee.ImageCollection.assert_called_once_with(DW_COLLECTION_ID)
+    mock_ee.Reducer.mean.assert_called()
+    filter_date_chain = mock_ee.ImageCollection.return_value.filterDate.return_value
+    dw_image = filter_date_chain.filterBounds.return_value.select.return_value.mean.return_value
+    dw_image.reduceRegion.assert_called_once_with(
+        reducer=mock_ee.Reducer.mean.return_value, geometry=region, scale=10, maxPixels=1e7
+    )
+
+
 def test_resolve_percentile_threshold_uses_percentile_reducer(backend, mock_ee):
     similarity = MagicMock(name="similarity")
     search_geometry = MagicMock(name="search_geometry")

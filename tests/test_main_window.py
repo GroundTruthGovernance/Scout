@@ -408,6 +408,117 @@ def test_new_project_wiring_cancelled_dialog_creates_nothing(window, monkeypatch
     assert window.context.project is None
 
 
+def test_add_probe_refused_without_open_project(window):
+    window.action_add_probe.setChecked(True)
+    assert window.action_add_probe.isChecked() is False
+    assert "project" in window.status_bar.currentMessage().lower()
+
+
+def test_add_probe_refused_without_sign_in(window, tmp_path):
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.context.ee_auth.is_authenticated.return_value = False
+    window.action_add_probe.setChecked(True)
+    assert window.action_add_probe.isChecked() is False
+    assert "sign in" in window.status_bar.currentMessage().lower()
+
+
+def test_draw_pin_and_probe_actions_are_mutually_exclusive(window, tmp_path):
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.map_panel = MagicMock()
+
+    window.action_draw_polygon.setChecked(True)
+    window.action_add_pin.setChecked(True)
+    assert window.action_draw_polygon.isChecked() is False
+    assert window.action_add_probe.isChecked() is False
+
+    window.action_add_probe.setChecked(True)
+    assert window.action_add_pin.isChecked() is False
+    assert window.action_draw_polygon.isChecked() is False
+
+
+def test_point_click_in_probe_mode_saves_a_probe_pin(window, tmp_path):
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.action_add_probe.setChecked(True)
+    assert window._armed_pin_mode == "probe"
+
+    mock_ee = window.context.ee.ee
+    mock_ee.Reducer.mean.return_value = "MEAN_REDUCER"
+    # AE sampling goes through build_reference_vector, which calls
+    # reduceRegion + Array math on the mock; only the final .getInfo()
+    # calls need real-ish values.
+    fake_mean_dict = mock_ee.ImageCollection.return_value.filterDate.return_value.filterBounds.return_value \
+        .mosaic.return_value.select.return_value.reduceRegion.return_value
+    fake_mean_dict.get.return_value = 0.01
+    array_chain = mock_ee.Array.return_value
+    array_chain.pow.return_value.reduce.return_value.sqrt.return_value.get.return_value.getInfo.return_value = 1.23
+    mock_ee.List.return_value.getInfo.return_value = [0.01] * 64
+
+    dw_reduce = mock_ee.ImageCollection.return_value.filterDate.return_value.filterBounds.return_value \
+        .select.return_value.mean.return_value.reduceRegion.return_value
+    dw_reduce.getInfo.return_value = {"crops": 0.5, "built": 0.1}
+
+    # No Sentinel-2 scenes available for this probe's date range.
+    mock_ee.ImageCollection.return_value.filterBounds.return_value.filterDate.return_value \
+        .filter.return_value.map.return_value.size.return_value.getInfo.return_value = 0
+
+    window._on_point_clicked(-2.7, 53.7)
+
+    pins = repo.list_pins(window.context.conn, "SOL-RUG-CRK", pin_type="probe")
+    assert len(pins) == 1
+    assert pins[0]["pin_id"] == "SOL-RUG-CRK-PRB-001"
+    assert pins[0]["s2_scene_count"] == 0
+    assert window.action_add_probe.isChecked() is False
+
+
+def test_point_click_in_probe_mode_includes_s2_when_scenes_exist(window, tmp_path):
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.action_add_probe.setChecked(True)
+
+    mock_ee = window.context.ee.ee
+    ae_reduce = mock_ee.ImageCollection.return_value.filterDate.return_value.filterBounds.return_value \
+        .mosaic.return_value.select.return_value.reduceRegion.return_value
+    ae_reduce.get.return_value = 0.01
+    array_chain = mock_ee.Array.return_value
+    array_chain.pow.return_value.reduce.return_value.sqrt.return_value.get.return_value.getInfo.return_value = 1.0
+    mock_ee.List.return_value.getInfo.return_value = [0.01] * 64
+
+    dw_reduce = mock_ee.ImageCollection.return_value.filterDate.return_value.filterBounds.return_value \
+        .select.return_value.mean.return_value.reduceRegion.return_value
+    dw_reduce.getInfo.return_value = {"crops": 0.5}
+
+    s2_map_chain = mock_ee.ImageCollection.return_value.filterBounds.return_value.filterDate.return_value \
+        .filter.return_value.map.return_value
+    s2_map_chain.size.return_value.getInfo.return_value = 3  # scenes found this time
+
+    # get_s2_feature_image composes several .select()/.normalizedDifference()/.expression()
+    # calls on the median composite; only the final reduceRegion().getInfo() matters here.
+    composite = s2_map_chain.median.return_value
+    s2_feature_reduce = composite.select.return_value.addBands.return_value.addBands.return_value \
+        .addBands.return_value.addBands.return_value.addBands.return_value.addBands.return_value \
+        .addBands.return_value.reduceRegion.return_value
+    s2_feature_reduce.getInfo.return_value = {"NDVI": 0.42}
+
+    window._on_point_clicked(-2.7, 53.7)
+
+    pins = repo.list_pins(window.context.conn, "SOL-RUG-CRK", pin_type="probe")
+    assert len(pins) == 1
+    assert pins[0]["s2_scene_count"] == 3
+    assert json.loads(pins[0]["s2_json"]) == {"NDVI": 0.42}
+
+
+def test_probe_sampling_failure_is_surfaced_not_swallowed(window, tmp_path):
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.action_add_probe.setChecked(True)
+    window.context.ee.build_reference_vector = MagicMock(side_effect=RuntimeError("EE quota exceeded"))
+
+    window._on_point_clicked(0.0, 0.0)
+    assert "EE quota exceeded" in window.status_bar.currentMessage()
+
+
 def test_new_pin_group_requires_project(window):
     window._prompt_new_pin_group()
     assert "project" in window.status_bar.currentMessage().lower()

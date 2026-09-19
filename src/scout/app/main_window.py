@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         self._ee_sign_in_worker: EarthEngineSignInWorker | None = None
         self._last_similarity_result = None
         self._last_reference_geometry_geojson: str | None = None
+        self._armed_pin_mode: str = "observation"   # "observation" | "probe"
 
         self.map_panel = MapPanel(self)
         self.setCentralWidget(self.map_panel)
@@ -128,6 +129,7 @@ class MainWindow(QMainWindow):
         # Sample / drawing
         self.action_draw_polygon = QAction("Draw &Polygon", self, checkable=True)
         self.action_add_pin = QAction("Add &Pin", self, checkable=True)
+        self.action_add_probe = QAction("Add Pro&be", self, checkable=True)
         self.action_clear_geometry = QAction("&Clear Drawn Geometry", self)
         self.action_new_pin_group = QAction("&New Pin Group…", self)
 
@@ -183,6 +185,7 @@ class MainWindow(QMainWindow):
         sample_menu = menu_bar.addMenu("&Sample")
         sample_menu.addAction(self.action_draw_polygon)
         sample_menu.addAction(self.action_add_pin)
+        sample_menu.addAction(self.action_add_probe)
         sample_menu.addAction(self.action_clear_geometry)
         sample_menu.addSeparator()
         sample_menu.addAction(self.action_new_pin_group)
@@ -212,6 +215,7 @@ class MainWindow(QMainWindow):
         self.main_toolbar.setObjectName("MainToolbar")
         self.main_toolbar.addAction(self.action_draw_polygon)
         self.main_toolbar.addAction(self.action_add_pin)
+        self.main_toolbar.addAction(self.action_add_probe)
         self.main_toolbar.addAction(self.action_run_ae)
         self.addToolBar(self.main_toolbar)
         self.toolbars_menu.addAction(self.main_toolbar.toggleViewAction())
@@ -235,6 +239,7 @@ class MainWindow(QMainWindow):
 
         self.action_draw_polygon.toggled.connect(self._on_draw_polygon_toggled)
         self.action_add_pin.toggled.connect(self._on_add_pin_toggled)
+        self.action_add_probe.toggled.connect(self._on_add_probe_toggled)
         self.action_clear_geometry.triggered.connect(self._on_clear_geometry)
         self.action_run_ae.triggered.connect(self.run_ae_similarity)
         self.action_clean_map.toggled.connect(self._on_clean_map_toggled)
@@ -301,6 +306,7 @@ class MainWindow(QMainWindow):
     def _on_draw_polygon_toggled(self, checked: bool) -> None:
         if checked:
             self.action_add_pin.setChecked(False)
+            self.action_add_probe.setChecked(False)
             self.map_panel.enable_draw_polygon()
         else:
             self.map_panel.disable_drawing()
@@ -311,7 +317,26 @@ class MainWindow(QMainWindow):
             self.action_add_pin.setChecked(False)
             return
         if checked:
+            self._armed_pin_mode = "observation"
             self.action_draw_polygon.setChecked(False)
+            self.action_add_probe.setChecked(False)
+            self.map_panel.enable_pin_drop()
+        else:
+            self.map_panel.disable_drawing()
+
+    def _on_add_probe_toggled(self, checked: bool) -> None:
+        if checked and self.context.project is None:
+            self.set_status("Open or create a project before dropping a probe.", error=True)
+            self.action_add_probe.setChecked(False)
+            return
+        if checked and not self.context.ee_auth.is_authenticated():
+            self.set_status("Sign in to Earth Engine first (Tools > Sign in to Earth Engine…).", error=True)
+            self.action_add_probe.setChecked(False)
+            return
+        if checked:
+            self._armed_pin_mode = "probe"
+            self.action_draw_polygon.setChecked(False)
+            self.action_add_pin.setChecked(False)
             self.map_panel.enable_pin_drop()
         else:
             self.map_panel.disable_drawing()
@@ -331,9 +356,17 @@ class MainWindow(QMainWindow):
         # Dropping a pin *is* the save action for a pin (unlike a drawn
         # polygon, which stays exploratory until a sample/response is
         # explicitly saved) — see docs/ARCHITECTURE.md, "Guiding
-        # philosophy". _on_add_pin_toggled already refused to arm the tool
-        # without an open project, so self.context.project is set here.
-        self.action_add_pin.setChecked(False)
+        # philosophy". The toggled handlers already refused to arm
+        # whichever tool is active without an open project (and, for a
+        # probe, without EE sign-in), so self.context.project is set here.
+        if self._armed_pin_mode == "probe":
+            self.action_add_probe.setChecked(False)
+            self._save_probe_pin(lon, lat)
+        else:
+            self.action_add_pin.setChecked(False)
+            self._save_observation_pin(lon, lat)
+
+    def _save_observation_pin(self, lon: float, lat: float) -> None:
         project_key = self.context.project.project_key
         next_number = repo.count_all_pins(self.context.conn, project_key, "observation") + 1
         pin = Pin(
@@ -345,6 +378,55 @@ class MainWindow(QMainWindow):
         self.map_panel.add_marker(pin.pin_id, lon, lat, popup_text=pin.pin_id)
         self.layers_panel.add_pin_marker(pin.pin_id, pin.pin_id)
         self.context.log("info", f"{pin.pin_id} added.", related_object_id=pin.pin_id)
+
+    def _save_probe_pin(self, lon: float, lat: float) -> None:
+        """Samples AE64+norm, Dynamic World, and (best-effort) Sentinel-2
+        features/indices in a small buffer around the click, matching the
+        GEE prototype's multi-dataset probe. Fixed at a 5 m buffer / mean
+        reducer / the current reference year for now — the original UI's
+        radius/reducer/year selectors are a reasonable follow-up, not
+        built tonight."""
+        project_key = self.context.project.project_key
+        year = self.context.exploration.reference_year
+        ee = self.context.ee.ee
+
+        try:
+            self.set_status(f"Sampling AE/S2/DW at {lon:.5f}, {lat:.5f}…")
+            region = ee.Geometry.Point([lon, lat]).buffer(5)
+
+            raw_vector_list, vector_norm, _ = self.context.ee.build_reference_vector(year, region)
+            ae_vector = raw_vector_list.getInfo()
+            ae_norm = vector_norm.getInfo()
+
+            dw_values = self.context.ee.sample_dynamic_world(year, region).getInfo()
+
+            start, end = f"{year}-06-01", f"{year}-09-01"
+            s2_collection = self.context.ee.get_s2_collection(region, start, end)
+            scene_count = s2_collection.size().getInfo()
+            s2_values = None
+            if scene_count:
+                s2_image = self.context.ee.get_s2_feature_image(s2_collection.median())
+                s2_values = s2_image.reduceRegion(
+                    reducer=ee.Reducer.mean(), geometry=region, scale=10, maxPixels=1e7
+                ).getInfo()
+
+            next_number = repo.count_all_pins(self.context.conn, project_key, "probe") + 1
+            pin = Pin(
+                pin_id=f"{project_key}-PRB-{next_number:03d}",
+                pin_type="probe", project_key=project_key, lon=lon, lat=lat,
+                probe_year=int(year), probe_radius_m=5.0, probe_neighbourhood="Pixel",
+                probe_reducer="mean", ae_vector=ae_vector, ae_vector_norm=ae_norm,
+                dw_values=dw_values, s2_values=s2_values, s2_scene_count=scene_count,
+                created_utc=utc_now_iso(), modified_utc=utc_now_iso(),
+            )
+            repo.insert_pin(self.context.conn, pin)
+            self.map_panel.add_marker(pin.pin_id, lon, lat, color="#FF00FF", popup_text=pin.pin_id)
+            self.layers_panel.add_pin_marker(pin.pin_id, pin.pin_id)
+            self.set_status(f"{pin.pin_id} probe saved.")
+            self.context.log("info", f"{pin.pin_id} probe saved.", related_object_id=pin.pin_id)
+        except Exception as exc:  # noqa: BLE001 — surfaced to the user, not swallowed
+            self.set_status(f"Probe sampling failed: {exc}", error=True)
+            self.context.log("error", f"Probe sampling failed: {exc}")
 
     def _on_map_clicked(self, lon: float, lat: float) -> None:
         self.coordinate_label.setText(f"Lon {lon:.6f}  Lat {lat:.6f}")
