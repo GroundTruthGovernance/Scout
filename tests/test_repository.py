@@ -202,6 +202,45 @@ def test_latent_signature_nullable_origin(conn, project):
     assert sigs[0]["origin_geometry_geojson"] is None
 
 
+def test_batch_job_queue_order_and_lifecycle(conn, project):
+    repo.insert_batch_job(
+        conn, "JOB-1", project.project_key, "ae_response",
+        '{"type": "Polygon", "coordinates": []}', {"reference_year": "2023"},
+    )
+    repo.insert_batch_job(
+        conn, "JOB-2", project.project_key, "ae_response",
+        '{"type": "Polygon", "coordinates": []}', {"reference_year": "2024"},
+    )
+
+    jobs = repo.list_batch_jobs(conn, project.project_key)
+    assert [j["job_id"] for j in jobs] == ["JOB-1", "JOB-2"]
+    assert jobs[0]["queue_order"] == 1
+    assert jobs[1]["queue_order"] == 2
+    assert all(j["status"] == "queued" for j in jobs)
+
+    queued = repo.list_queued_batch_jobs(conn, project.project_key)
+    assert len(queued) == 2
+
+    repo.update_batch_job_status(conn, "JOB-1", "running")
+    running = conn.execute("SELECT * FROM batch_jobs WHERE job_id = 'JOB-1'").fetchone()
+    assert running["status"] == "running"
+    assert running["started_utc"] is not None
+
+    repo.update_batch_job_status(conn, "JOB-1", "done", result_id="RESP-1")
+    done = conn.execute("SELECT * FROM batch_jobs WHERE job_id = 'JOB-1'").fetchone()
+    assert done["status"] == "done"
+    assert done["result_id"] == "RESP-1"
+    assert done["finished_utc"] is not None
+
+    repo.update_batch_job_status(conn, "JOB-2", "failed", error_message="EE quota exceeded")
+    failed = conn.execute("SELECT * FROM batch_jobs WHERE job_id = 'JOB-2'").fetchone()
+    assert failed["status"] == "failed"
+    assert failed["error_message"] == "EE quota exceeded"
+
+    remaining_queued = repo.list_queued_batch_jobs(conn, project.project_key)
+    assert remaining_queued == []
+
+
 def test_activity_log_records_and_filters(conn, project):
     repo.log_activity(conn, "Sample SOL-RUG-CRK-F01-S01 saved.", project_key=project.project_key)
     repo.log_activity(conn, "Unrelated project event.", project_key="OTHER-PROJ")

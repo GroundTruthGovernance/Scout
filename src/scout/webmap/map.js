@@ -12,7 +12,7 @@
 (function () {
   "use strict";
 
-  const panes = {}; // paneId -> { map, drawState, layers: {layerId: true} }
+  const panes = {}; // paneId -> { map, drawState, layers: {layerId: true}, markers: {markerId: maplibregl.Marker} }
 
   const OSM_STYLE = {
     version: 8,
@@ -68,7 +68,7 @@
     map.addControl(new maplibregl.NavigationControl(), "top-right");
     map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 
-    panes[paneId] = { map: map, drawState: null, layers: {} };
+    panes[paneId] = { map: map, drawState: null, layers: {}, markers: {} };
 
     map.on("load", function () {
       map.addSource("scout-draw", {
@@ -237,6 +237,33 @@
     paneOrThrow(paneId).map.flyTo({ center: [lon, lat], zoom: zoom });
   }
 
+  // -- Point markers (saved pins: observations + probes) ------------------
+
+  function addMarker(paneId, markerId, lon, lat, color, popupText) {
+    const pane = paneOrThrow(paneId);
+    if (pane.markers[markerId]) removeMarker(paneId, markerId);
+    const marker = new maplibregl.Marker({ color: color || "#00FFFF" }).setLngLat([lon, lat]);
+    if (popupText) marker.setPopup(new maplibregl.Popup({ offset: 12 }).setText(popupText));
+    marker.addTo(pane.map);
+    pane.markers[markerId] = marker;
+  }
+
+  function removeMarker(paneId, markerId) {
+    const pane = paneOrThrow(paneId);
+    const marker = pane.markers[markerId];
+    if (marker) {
+      marker.remove();
+      delete pane.markers[markerId];
+    }
+  }
+
+  function setMarkerVisible(paneId, markerId, visible) {
+    const pane = paneOrThrow(paneId);
+    const marker = pane.markers[markerId];
+    if (!marker) return;
+    marker.getElement().style.display = visible ? "" : "none";
+  }
+
   window.scoutMap = {
     createMap: createMap,
     setBaseStyle: setBaseStyle,
@@ -249,6 +276,9 @@
     setLayerVisible: setLayerVisible,
     removeLayer: removeLayer,
     flyTo: flyTo,
+    addMarker: addMarker,
+    removeMarker: removeMarker,
+    setMarkerVisible: setMarkerVisible,
   };
 
   if (typeof qt !== "undefined" && qt.webChannelTransport) {

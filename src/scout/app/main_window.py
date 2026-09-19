@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
 )
 
 from scout.core import repository as repo
+from scout.core.models import Pin
+from scout.core.power import perform_power_action
 from scout.core.util import get_ae_vis, utc_now_iso
 from scout._version import SCOUT_VERSION
 
@@ -225,13 +227,15 @@ class MainWindow(QMainWindow):
         self.action_about.triggered.connect(self._show_about)
         self.action_sign_in_ee.triggered.connect(self._sign_in_to_earth_engine)
         self.action_sign_out_ee.triggered.connect(self._sign_out_of_earth_engine)
+        self.action_add_to_queue.triggered.connect(self._add_current_run_to_queue)
+        self.batch_queue_panel.run_queue_requested.connect(self.run_batch_queue)
 
         self.map_panel.bridge.polygon_drawn.connect(self._on_polygon_drawn)
         self.map_panel.bridge.point_clicked.connect(self._on_point_clicked)
         self.map_panel.bridge.map_clicked.connect(self._on_map_clicked)
 
         self.context.activity_logged.connect(self._on_activity_logged)
-        self.layers_panel.layer_visibility_changed.connect(self.map_panel.set_layer_visible)
+        self.layers_panel.layer_visibility_changed.connect(self._on_layer_visibility_changed)
 
     # -- File menu handlers -------------------------------------------------
 
@@ -253,6 +257,7 @@ class MainWindow(QMainWindow):
             self.set_status(f"Opened {project.project_key}.")
             self.refresh_activity_log()
             self.refresh_attribute_table()
+            self.refresh_batch_queue()
         except ValueError as exc:
             QMessageBox.critical(self, "Open Project", str(exc))
 
@@ -266,6 +271,10 @@ class MainWindow(QMainWindow):
             self.map_panel.disable_drawing()
 
     def _on_add_pin_toggled(self, checked: bool) -> None:
+        if checked and self.context.project is None:
+            self.set_status("Open or create a project before dropping a pin.", error=True)
+            self.action_add_pin.setChecked(False)
+            return
         if checked:
             self.action_draw_polygon.setChecked(False)
             self.map_panel.enable_pin_drop()
@@ -284,11 +293,32 @@ class MainWindow(QMainWindow):
         self.context.log("info", "Reference polygon drawn.")
 
     def _on_point_clicked(self, lon: float, lat: float) -> None:
+        # Dropping a pin *is* the save action for a pin (unlike a drawn
+        # polygon, which stays exploratory until a sample/response is
+        # explicitly saved) — see docs/ARCHITECTURE.md, "Guiding
+        # philosophy". _on_add_pin_toggled already refused to arm the tool
+        # without an open project, so self.context.project is set here.
         self.action_add_pin.setChecked(False)
-        self.context.log("info", f"Pin location selected at {lon:.6f}, {lat:.6f}.")
+        project_key = self.context.project.project_key
+        next_number = repo.count_all_pins(self.context.conn, project_key, "observation") + 1
+        pin = Pin(
+            pin_id=f"{project_key}-OBS-{next_number:03d}",
+            pin_type="observation", project_key=project_key, lon=lon, lat=lat,
+            created_utc=utc_now_iso(), modified_utc=utc_now_iso(),
+        )
+        repo.insert_pin(self.context.conn, pin)
+        self.map_panel.add_marker(pin.pin_id, lon, lat, popup_text=pin.pin_id)
+        self.layers_panel.add_layer("Pins", pin.pin_id, pin.pin_id, kind="marker")
+        self.context.log("info", f"{pin.pin_id} added.", related_object_id=pin.pin_id)
 
     def _on_map_clicked(self, lon: float, lat: float) -> None:
         self.coordinate_label.setText(f"Lon {lon:.6f}  Lat {lat:.6f}")
+
+    def _on_layer_visibility_changed(self, layer_id: str, visible: bool, kind: str) -> None:
+        if kind == "marker":
+            self.map_panel.set_marker_visible(layer_id, visible)
+        else:
+            self.map_panel.set_layer_visible(layer_id, visible)
 
     def _on_clean_map_toggled(self, checked: bool) -> None:
         for dock in self.findChildren(QDockWidget):
@@ -299,6 +329,46 @@ class MainWindow(QMainWindow):
 
     # -- Run AE (the golden path) ---------------------------------------
 
+    def _exploration_recipe(self) -> dict:
+        exploration = self.context.exploration
+        return {
+            "reference_year": exploration.reference_year,
+            "target_year": exploration.target_year,
+            "search_extent": exploration.search_extent,
+            "threshold_mode": exploration.threshold_mode,
+            "threshold": exploration.threshold,
+            "mask_display_style": exploration.mask_display_style,
+            "mask_color": exploration.mask_color,
+            "mask_opacity": exploration.mask_opacity,
+        }
+
+    def _compute_similarity_tile_url(self, geojson_text: str, recipe: dict) -> str:
+        """Shared by the interactive Run AE button and the batch queue —
+        everything from "reference geometry" to "a tile URL ready to add
+        to the map" lives here exactly once."""
+        ee = self.context.ee.ee
+        reference_geometry = ee.Geometry(json.loads(geojson_text))
+        search_geometry = self.context.ee.get_search_geometry(
+            recipe["search_extent"], reference_geometry
+        )
+        result = self.context.ee.run_similarity(
+            recipe["reference_year"], recipe["target_year"], reference_geometry, search_geometry,
+        )
+
+        if recipe["threshold_mode"] == "percentile":
+            threshold_value = self.context.ee.resolve_percentile_threshold(
+                result.similarity, search_geometry, recipe["threshold"] * 100
+            )
+            masked = self.context.ee.apply_percentile_threshold(result.similarity, threshold_value)
+            cutoff_for_vis = threshold_value.getInfo()
+        else:
+            masked = self.context.ee.apply_absolute_threshold(result.similarity, recipe["threshold"])
+            cutoff_for_vis = recipe["threshold"]
+
+        vis_params = get_ae_vis(cutoff_for_vis, recipe["mask_display_style"], recipe["mask_color"])
+        map_id = ee.Image(masked).getMapId(vis_params)
+        return map_id["tile_fetcher"].url_format
+
     def run_ae_similarity(self) -> None:
         geojson_text = self.context.exploration.reference_geometry_geojson
         if not geojson_text:
@@ -308,39 +378,16 @@ class MainWindow(QMainWindow):
             self.set_status("Sign in to Earth Engine first (Tools > Sign in to Earth Engine…).", error=True)
             return
 
-        ee = self.context.ee.ee
         try:
-            reference_geometry = ee.Geometry(json.loads(geojson_text))
-            exploration = self.context.exploration
-            search_geometry = self.context.ee.get_search_geometry(
-                exploration.search_extent, reference_geometry
-            )
-
             self.set_status("Calculating AE similarity…")
-            result = self.context.ee.run_similarity(
-                exploration.reference_year, exploration.target_year,
-                reference_geometry, search_geometry,
-            )
-
-            if exploration.threshold_mode == "percentile":
-                threshold_value = self.context.ee.resolve_percentile_threshold(
-                    result.similarity, search_geometry, exploration.threshold * 100
-                )
-                masked = self.context.ee.apply_percentile_threshold(result.similarity, threshold_value)
-                cutoff_for_vis = threshold_value.getInfo()
-            else:
-                masked = self.context.ee.apply_absolute_threshold(result.similarity, exploration.threshold)
-                cutoff_for_vis = exploration.threshold
-
-            vis_params = get_ae_vis(cutoff_for_vis, exploration.mask_display_style, exploration.mask_color)
-            map_id = ee.Image(masked).getMapId(vis_params)
-            tile_url_template = map_id["tile_fetcher"].url_format
+            recipe = self._exploration_recipe()
+            tile_url_template = self._compute_similarity_tile_url(geojson_text, recipe)
 
             layer_id = f"response-preview-{uuid.uuid4().hex[:8]}"
             if self._current_response_layer_id:
                 self.map_panel.remove_layer(self._current_response_layer_id)
                 self.layers_panel.remove_layer(self._current_response_layer_id)
-            self.map_panel.add_raster_layer(layer_id, tile_url_template, exploration.mask_opacity)
+            self.map_panel.add_raster_layer(layer_id, tile_url_template, recipe["mask_opacity"])
             self.layers_panel.add_layer("Responses", layer_id, "Current AE response (unsaved)")
             self._current_response_layer_id = layer_id
 
@@ -349,6 +396,75 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 — surfaced to the user, not swallowed
             self.set_status(f"AE run failed: {exc}", error=True)
             self.context.log("error", f"AE run failed: {exc}")
+
+    # -- Batch queue -------------------------------------------------------
+
+    def _add_current_run_to_queue(self) -> None:
+        geojson_text = self.context.exploration.reference_geometry_geojson
+        if not geojson_text:
+            self.set_status("Draw a reference polygon first.", error=True)
+            return
+        if self.context.project is None:
+            self.set_status("Open or create a project before queuing a run.", error=True)
+            return
+
+        job_id = f"JOB-{uuid.uuid4().hex[:8]}"
+        repo.insert_batch_job(
+            self.context.conn, job_id, self.context.project.project_key,
+            "ae_response", geojson_text, self._exploration_recipe(),
+        )
+        self.refresh_batch_queue()
+        self.set_status(f"{job_id} added to the batch queue.")
+        self.context.log("info", f"{job_id} queued.", related_object_id=job_id)
+
+    def refresh_batch_queue(self) -> None:
+        if self.context.conn is None or self.context.project is None:
+            return
+        rows = repo.list_batch_jobs(self.context.conn, self.context.project.project_key)
+        self.batch_queue_panel.load_jobs(rows)
+
+    def run_batch_queue(self, post_action: str) -> None:
+        if self.context.project is None:
+            self.set_status("No project open — nothing to run.", error=True)
+            return
+        if not self.context.ee_auth.is_authenticated():
+            self.set_status("Sign in to Earth Engine before running the batch queue.", error=True)
+            return
+
+        jobs = repo.list_queued_batch_jobs(self.context.conn, self.context.project.project_key)
+        if not jobs:
+            self.set_status("Batch queue is empty.")
+            return
+
+        succeeded, failed = 0, 0
+        for job in jobs:
+            repo.update_batch_job_status(self.context.conn, job["job_id"], "running")
+            self.refresh_batch_queue()
+            try:
+                recipe = json.loads(job["recipe_json"])
+                self._compute_similarity_tile_url(job["geometry_geojson"], recipe)
+                repo.update_batch_job_status(self.context.conn, job["job_id"], "done")
+                succeeded += 1
+            except Exception as exc:  # noqa: BLE001 — recorded per-job, queue continues
+                repo.update_batch_job_status(self.context.conn, job["job_id"], "failed", error_message=str(exc))
+                failed += 1
+            self.refresh_batch_queue()
+
+        self.context.log("info", f"Batch queue finished: {succeeded} succeeded, {failed} failed.")
+        self.set_status(f"Batch queue finished: {succeeded} succeeded, {failed} failed.")
+
+        if post_action != "None":
+            self._confirm_and_run_power_action(post_action)
+
+    def _confirm_and_run_power_action(self, action: str) -> None:
+        reply = QMessageBox.question(
+            self, f"{action} after batch",
+            f"The batch queue has finished. {action} this PC now?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self.context.log("info", f"Post-batch power action: {action}.")
+            perform_power_action(action)
 
     # -- Status / logging -------------------------------------------------
 

@@ -23,7 +23,7 @@ GROUP_NAMES = [
 
 
 class LayersPanel(QWidget):
-    layer_visibility_changed = Signal(str, bool)   # layer_id, visible
+    layer_visibility_changed = Signal(str, bool, str)   # layer_id, visible, kind ("raster"|"marker")
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -48,7 +48,12 @@ class LayersPanel(QWidget):
         self.tree.expandAll()
         self.tree.itemChanged.connect(self._on_item_changed)
 
-    def add_layer(self, group_name: str, layer_id: str, label: str, checked: bool = True) -> None:
+    def add_layer(
+        self, group_name: str, layer_id: str, label: str, checked: bool = True, kind: str = "raster"
+    ) -> None:
+        """kind distinguishes a MapLibre raster layer from a point marker
+        (pins) since they're toggled through different map_panel calls —
+        see MainWindow._on_layer_visibility_changed."""
         group_item = self._groups.get(group_name)
         if group_item is None:
             raise ValueError(f"Unknown layer group: {group_name!r}")
@@ -57,6 +62,7 @@ class LayersPanel(QWidget):
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
         item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
         item.setData(0, Qt.UserRole, layer_id)
+        item.setData(0, Qt.UserRole + 1, kind)
         group_item.addChild(item)
         group_item.setExpanded(True)
 
@@ -77,4 +83,5 @@ class LayersPanel(QWidget):
         layer_id = item.data(0, Qt.UserRole)
         if layer_id is None:
             return  # a group header, not a layer
-        self.layer_visibility_changed.emit(layer_id, item.checkState(0) == Qt.Checked)
+        kind = item.data(0, Qt.UserRole + 1) or "raster"
+        self.layer_visibility_changed.emit(layer_id, item.checkState(0) == Qt.Checked, kind)

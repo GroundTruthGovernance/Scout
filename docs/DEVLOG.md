@@ -27,6 +27,56 @@ that moment itself still isn't.
 
 Continuing into Task #9 (stretch features) with the remaining time.
 
+## 2026-09-19 — Session 1 continued: pins, batch queue, power actions
+
+- **Pins now actually save**, closing a real gap from earlier tonight —
+  `_on_point_clicked` previously only logged a message. Now: dropping a
+  pin requires an open project (checked on arming, matching the GEE
+  prototype's `armPinButton` guard), creates a `Pin` row via
+  `repo.insert_pin` with a collision-proof sequence number
+  (`repo.count_all_pins` counts every row ever inserted regardless of
+  status, so a deleted pin's number is never reused), adds a MapLibre
+  marker (`webmap/map.js` gained `addMarker`/`removeMarker`/
+  `setMarkerVisible`), and appears in the Layers panel under "Pins".
+  Only the "observation" pin type is wired tonight — full multi-dataset
+  probe extraction (AE/S2/DW sampling at a point) is still just a schema
+  column set with no compute wired to it, a reasonable next-session task
+  rather than something to rush.
+- **Layers panel now distinguishes raster layers from point markers** —
+  a marker's visibility toggle needs `map_panel.set_marker_visible()`,
+  not `set_layer_visible()` (calling the raster method on a marker id is
+  a silent no-op in MapLibre, not a crash, which would have been an easy
+  bug to ship unnoticed). `LayersPanel.add_layer()` gained a `kind`
+  parameter and the visibility signal now carries it through to
+  `MainWindow._on_layer_visibility_changed`, which dispatches to the
+  right map_panel method.
+- **Batch queue is now real**, not just a table widget: `Batch > Add
+  Current Run to Queue` inserts a `batch_jobs` row from the current
+  exploration state; `BatchQueuePanel`'s "Run queue" button processes
+  every queued job sequentially through the *same*
+  `_compute_similarity_tile_url()` helper the interactive Run AE button
+  uses (extracted from `run_ae_similarity` specifically so there's one
+  code path for "geometry + recipe -> tile URL," not two that could
+  drift apart), updating each job's status as it goes and recording a
+  per-job error without aborting the rest of the queue on one failure.
+- **Post-batch power actions are real**, not a placeholder combo box:
+  `core/power.py` has actual Windows/macOS/Linux sleep and shutdown
+  commands, injectable via a `run_command` parameter specifically so the
+  test suite can never accidentally sleep or shut down the machine
+  running it (there's an explicit test guarding that). `run_batch_queue()`
+  asks for confirmation (`QMessageBox.question`) before calling
+  `perform_power_action()` — never silent, matching what was asked for.
+- **95/95 tests passing**, exit code 0 confirmed explicitly (not just
+  reading pytest's summary line — that's exactly the check that missed
+  the earlier Windows-only crash).
+- Still open from the original Task #9 scope: latent signature save
+  action (schema + repository exist, no UI action calls them yet) and
+  the session-report composer. Both are reasonable next-session work
+  rather than something to compress into whatever time is left tonight —
+  worth doing carefully rather than quickly given the report composer in
+  particular is meant to directly replace manual work you're doing by
+  hand right now.
+
 ## 2026-09-19 — Session 1: scaffold
 
 - Repository was empty; this is the first commit.

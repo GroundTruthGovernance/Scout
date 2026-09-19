@@ -343,6 +343,18 @@ def list_pins(
     return conn.execute(query, params).fetchall()
 
 
+def count_all_pins(conn: sqlite3.Connection, project_key: str, pin_type: str | None = None) -> int:
+    """Counts every pin ever inserted regardless of record_status, so a
+    deleted pin's number is never reused — used to derive the next
+    OBS-NNN/PRB-NNN sequence number."""
+    query = "SELECT COUNT(*) c FROM pins WHERE project_key = ?"
+    params: list = [project_key]
+    if pin_type:
+        query += " AND pin_type = ?"
+        params.append(pin_type)
+    return conn.execute(query, params).fetchone()["c"]
+
+
 def set_pin_status(conn: sqlite3.Connection, pin_id: str, status: str) -> None:
     conn.execute(
         "UPDATE pins SET record_status = ?, modified_utc = ? WHERE pin_id = ?",
@@ -382,6 +394,62 @@ def list_latent_signatures(
         f"SELECT * FROM latent_signatures WHERE project_key = ? AND {status_clause} ORDER BY created_utc",
         (project_key,),
     ).fetchall()
+
+
+# ---------------------------------------------------------------------
+# Batch queue
+# ---------------------------------------------------------------------
+
+def insert_batch_job(
+    conn: sqlite3.Connection, job_id: str, project_key: str, job_kind: str,
+    geometry_geojson: str, recipe: dict,
+) -> None:
+    next_order = conn.execute(
+        "SELECT COALESCE(MAX(queue_order), 0) + 1 n FROM batch_jobs WHERE project_key = ?",
+        (project_key,),
+    ).fetchone()["n"]
+    conn.execute(
+        """INSERT INTO batch_jobs
+           (job_id, project_key, job_kind, status, geometry_geojson, recipe_json,
+            queue_order, created_utc)
+           VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)""",
+        (job_id, project_key, job_kind, geometry_geojson, json.dumps(recipe),
+         next_order, utc_now_iso()),
+    )
+    conn.commit()
+
+
+def list_batch_jobs(conn: sqlite3.Connection, project_key: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM batch_jobs WHERE project_key = ? ORDER BY queue_order",
+        (project_key,),
+    ).fetchall()
+
+
+def list_queued_batch_jobs(conn: sqlite3.Connection, project_key: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM batch_jobs WHERE project_key = ? AND status = 'queued' ORDER BY queue_order",
+        (project_key,),
+    ).fetchall()
+
+
+def update_batch_job_status(
+    conn: sqlite3.Connection, job_id: str, status: str,
+    result_id: str | None = None, error_message: str | None = None,
+) -> None:
+    now = utc_now_iso()
+    if status == "running":
+        conn.execute(
+            "UPDATE batch_jobs SET status = ?, started_utc = ? WHERE job_id = ?",
+            (status, now, job_id),
+        )
+    else:
+        conn.execute(
+            """UPDATE batch_jobs SET status = ?, result_id = ?, error_message = ?, finished_utc = ?
+               WHERE job_id = ?""",
+            (status, result_id, error_message, now, job_id),
+        )
+    conn.commit()
 
 
 # ---------------------------------------------------------------------

@@ -155,7 +155,181 @@ def test_sign_in_worker_failure_updates_status(window):
     assert "no browser available" in window.status_bar.currentMessage()
 
 
-def test_draw_polygon_and_add_pin_are_mutually_exclusive(window):
+def test_pin_drop_refused_without_open_project(window):
+    window.action_add_pin.setChecked(True)
+    assert window.action_add_pin.isChecked() is False
+    assert "project" in window.status_bar.currentMessage().lower()
+
+
+def test_pin_drop_creates_pin_row_and_marker(window, tmp_path):
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.map_panel = MagicMock()
+    window.layers_panel = MagicMock()
+
+    window._on_point_clicked(-2.7, 53.7)
+
+    pins = repo.list_pins(window.context.conn, "SOL-RUG-CRK")
+    assert len(pins) == 1
+    assert pins[0]["pin_id"] == "SOL-RUG-CRK-OBS-001"
+    assert pins[0]["lon"] == -2.7
+    assert pins[0]["lat"] == 53.7
+
+    window.map_panel.add_marker.assert_called_once_with(
+        "SOL-RUG-CRK-OBS-001", -2.7, 53.7, popup_text="SOL-RUG-CRK-OBS-001"
+    )
+    window.layers_panel.add_layer.assert_called_once_with(
+        "Pins", "SOL-RUG-CRK-OBS-001", "SOL-RUG-CRK-OBS-001", kind="marker"
+    )
+
+
+def test_pin_numbers_do_not_collide_across_drops(window, tmp_path):
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.map_panel = MagicMock()
+    window.layers_panel = MagicMock()
+
+    window._on_point_clicked(0.0, 0.0)
+    window._on_point_clicked(1.0, 1.0)
+
+    pins = repo.list_pins(window.context.conn, "SOL-RUG-CRK")
+    assert {p["pin_id"] for p in pins} == {
+        "SOL-RUG-CRK-OBS-001", "SOL-RUG-CRK-OBS-002",
+    }
+
+
+def test_layer_visibility_dispatches_by_kind(window):
+    window.map_panel = MagicMock()
+    window._on_layer_visibility_changed("resp-1", True, "raster")
+    window.map_panel.set_layer_visible.assert_called_once_with("resp-1", True)
+    window.map_panel.set_marker_visible.assert_not_called()
+
+    window.map_panel.reset_mock()
+    window._on_layer_visibility_changed("pin-1", False, "marker")
+    window.map_panel.set_marker_visible.assert_called_once_with("pin-1", False)
+    window.map_panel.set_layer_visible.assert_not_called()
+
+
+def test_add_current_run_to_queue_requires_geometry(window, tmp_path):
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window._add_current_run_to_queue()
+    assert "polygon" in window.status_bar.currentMessage().lower()
+
+
+def test_add_current_run_to_queue_requires_project(window):
+    geojson = json.dumps({"type": "Polygon", "coordinates": [[[0, 0], [0, 1], [1, 1], [0, 0]]]})
+    window._on_polygon_drawn(geojson)
+    window._add_current_run_to_queue()
+    assert "project" in window.status_bar.currentMessage().lower()
+
+
+def test_add_current_run_to_queue_inserts_job(window, tmp_path):
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    geojson = json.dumps({"type": "Polygon", "coordinates": [[[0, 0], [0, 1], [1, 1], [0, 0]]]})
+    window._on_polygon_drawn(geojson)
+
+    window._add_current_run_to_queue()
+
+    jobs = repo.list_batch_jobs(window.context.conn, "SOL-RUG-CRK")
+    assert len(jobs) == 1
+    assert jobs[0]["job_kind"] == "ae_response"
+    assert jobs[0]["status"] == "queued"
+
+
+def test_run_batch_queue_empty_reports_status(window, tmp_path):
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.run_batch_queue("None")
+    assert "empty" in window.status_bar.currentMessage().lower()
+
+
+def test_run_batch_queue_requires_sign_in(window, tmp_path):
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.context.ee_auth.is_authenticated.return_value = False
+    window.run_batch_queue("None")
+    assert "sign in" in window.status_bar.currentMessage().lower()
+
+
+def test_run_batch_queue_processes_all_jobs(window, tmp_path):
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    geojson = json.dumps({"type": "Polygon", "coordinates": [[[0, 0], [0, 1], [1, 1], [0, 0]]]})
+    window._on_polygon_drawn(geojson)
+    window._add_current_run_to_queue()
+    window._add_current_run_to_queue()
+
+    fake_map_id = {"tile_fetcher": MagicMock(url_format="https://example.com/{z}/{x}/{y}")}
+    window.context.ee.ee.Image.return_value.getMapId.return_value = fake_map_id
+
+    window.run_batch_queue("None")
+
+    jobs = repo.list_batch_jobs(window.context.conn, "SOL-RUG-CRK")
+    assert all(j["status"] == "done" for j in jobs)
+    assert "2 succeeded, 0 failed" in window.status_bar.currentMessage()
+
+
+def test_run_batch_queue_records_per_job_failure_and_continues(window, tmp_path):
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    geojson = json.dumps({"type": "Polygon", "coordinates": [[[0, 0], [0, 1], [1, 1], [0, 0]]]})
+    window._on_polygon_drawn(geojson)
+    window._add_current_run_to_queue()
+
+    window.context.ee.run_similarity = MagicMock(side_effect=RuntimeError("EE quota exceeded"))
+    window.run_batch_queue("None")
+
+    jobs = repo.list_batch_jobs(window.context.conn, "SOL-RUG-CRK")
+    assert jobs[0]["status"] == "failed"
+    assert "EE quota exceeded" in jobs[0]["error_message"]
+    assert "1 succeeded, 1 failed" not in window.status_bar.currentMessage()  # sanity: only 1 job total
+    assert "0 succeeded, 1 failed" in window.status_bar.currentMessage()
+
+
+def test_run_batch_queue_asks_before_sleeping_and_respects_no(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    geojson = json.dumps({"type": "Polygon", "coordinates": [[[0, 0], [0, 1], [1, 1], [0, 0]]]})
+    window._on_polygon_drawn(geojson)
+    window._add_current_run_to_queue()
+
+    fake_map_id = {"tile_fetcher": MagicMock(url_format="https://example.com/{z}/{x}/{y}")}
+    window.context.ee.ee.Image.return_value.getMapId.return_value = fake_map_id
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+    power_calls = []
+    monkeypatch.setattr("scout.app.main_window.perform_power_action", power_calls.append)
+
+    window.run_batch_queue("Sleep")
+    assert power_calls == []  # user said No
+
+
+def test_run_batch_queue_sleeps_when_confirmed(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    geojson = json.dumps({"type": "Polygon", "coordinates": [[[0, 0], [0, 1], [1, 1], [0, 0]]]})
+    window._on_polygon_drawn(geojson)
+    window._add_current_run_to_queue()
+
+    fake_map_id = {"tile_fetcher": MagicMock(url_format="https://example.com/{z}/{x}/{y}")}
+    window.context.ee.ee.Image.return_value.getMapId.return_value = fake_map_id
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    power_calls = []
+    monkeypatch.setattr("scout.app.main_window.perform_power_action", power_calls.append)
+
+    window.run_batch_queue("Sleep")
+    assert power_calls == ["Sleep"]
+
+
+def test_draw_polygon_and_add_pin_are_mutually_exclusive(window, tmp_path):
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")  # add-pin now requires one
     window.map_panel = MagicMock()
     window.action_draw_polygon.setChecked(True)
     assert window.action_add_pin.isChecked() is False

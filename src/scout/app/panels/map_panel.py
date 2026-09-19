@@ -115,3 +115,22 @@ class MapPanel(QWidget):
 
     def fly_to(self, lon: float, lat: float, zoom: float) -> None:
         self._run_js(f'window.scoutMap.flyTo("{self.PANE_ID}", {lon}, {lat}, {zoom});')
+
+    def add_marker(self, marker_id: str, lon: float, lat: float, color: str = "#00FFFF",
+                    popup_text: str = "") -> None:
+        self._run_js(
+            "window.scoutMap.addMarker(%s, %s, %s, %s, %s, %s);"
+            % (json.dumps(self.PANE_ID), json.dumps(marker_id), lon, lat,
+               json.dumps(color), json.dumps(popup_text))
+        )
+
+    def remove_marker(self, marker_id: str) -> None:
+        self._run_js(
+            "window.scoutMap.removeMarker(%s, %s);" % (json.dumps(self.PANE_ID), json.dumps(marker_id))
+        )
+
+    def set_marker_visible(self, marker_id: str, visible: bool) -> None:
+        self._run_js(
+            "window.scoutMap.setMarkerVisible(%s, %s, %s);"
+            % (json.dumps(self.PANE_ID), json.dumps(marker_id), "true" if visible else "false")
+        )
