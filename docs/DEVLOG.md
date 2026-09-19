@@ -1,5 +1,13 @@
 # Dev log
 
+## 2026-09-19 02:06 UTC — Second green Windows CI run
+
+Run [35414504953](https://github.com/GroundTruthGovernance/Scout/actions/runs/35414504953)
+(commit `7d62b88`, pins + batch queue + power actions) **passed**. Two
+green Windows runs in a row now — the QtWebEngine teardown fix from
+earlier is holding. Continuing into the remaining Task #9 scope: a
+"Save as Latent Signature" action, then a session-report composer.
+
 Running log of what's been built, in what order, and why — kept so an
 autonomous or resumed session can pick up accurately without re-deriving
 context, and so you have a readable trail of the overnight build.
