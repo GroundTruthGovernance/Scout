@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Scout Map</title>
+  <link rel="stylesheet" href="vendor/maplibre-gl.css" />
+  <style>
+    html, body, #map-root { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; }
+    .scout-pane { position: absolute; top: 0; bottom: 0; }
+    .scout-cursor-crosshair .maplibregl-canvas { cursor: crosshair !important; }
+  </style>
+</head>
+<body>
+  <div id="map-root"></div>
+
+  <!-- Provided at runtime by the QtWebChannel C++/Python module's compiled
+       resources once QWebChannel is imported in the app — not a vendored
+       file. See docs/ARCHITECTURE.md for the Python<->JS bridge design. -->
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script src="vendor/maplibre-gl.js"></script>
+  <script src="map.js"></script>
+</body>
+</html>

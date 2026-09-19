@@ -76,5 +76,91 @@ context, and so you have a readable trail of the overnight build.
   briefly swapping the condition and confirming the test catches it.
 - Next: Qt shell (Task #4) — main window, menu bar, dock panel stubs.
 
+## 2026-09-19 — Session 1 continued: Qt shell, embedded map, golden path
+
+This session covered three planned tasks together (#4, #5, #6) because
+they're genuinely one seam — the main window's Run AE action *is* the map
+bridge wired to the EE backend — and splitting the commit would have left
+an intermediate state that couldn't actually be exercised end to end.
+
+- **Environment note**: this sandbox was missing `libegl1`/`libgbm1`/
+  `libnss3` (needed for `QWebEngineView` to import at all) and needed
+  `QTWEBENGINE_DISABLE_SANDBOX=1` (Chromium refuses its sandbox when
+  running as root, which this container does). Both installed/set;
+  `tests/conftest.py` sets `QT_QPA_PLATFORM=offscreen` and the sandbox
+  flag automatically for the whole test session. **Neither should matter
+  on your Windows machine** — real users aren't root and have a real GPU —
+  but if a Linux dev box hits the same `libEGL.so.1` import error, that's
+  the fix.
+- `src/scout/webmap/`: vendored MapLibre GL JS 4.7.1 (`vendor/maplibre-gl.js`
+  + `.css`, ~790KB, fetched via npm and copied in directly — not a CDN
+  reference, since the app must work with no internet dependency for its
+  *own* UI chrome even though EE compute itself needs a connection).
+  `map.html` + `map.js` implement: a single MapLibre instance today (keyed
+  by pane id "main" — the Run Compare / Tiled Product View design in
+  ARCHITECTURE.md extends this by adding more pane ids, not rewriting it),
+  two no-API-key base styles (OpenStreetMap streets, Esri World Imagery
+  satellite — **not** Google's basemap, since Scout doesn't bundle a
+  Google Maps Platform key; see the new note below), hand-rolled polygon
+  drawing (click to add vertex, Enter/double-click to finish, Escape to
+  cancel — deliberately not a plugin, to match the GEE prototype's
+  exact single-polygon interaction), pin/point click mode, and
+  add/remove/opacity/visibility for raster tile layers (what EE's
+  `getMapId()` tile URLs feed into).
+- `src/scout/app/panels/map_panel.py`: `MapPanel` (QWebEngineView host) +
+  `MapBridge` (QObject exposed to JS via QWebChannel at `window.bridge`).
+  JS calls `bridge.on_polygon_drawn/on_point_clicked/on_map_clicked`
+  directly; Python listens on plain Qt signals. Python→JS commands go
+  through `runJavaScript()` with `json.dumps()`-escaped arguments (tile
+  URL templates contain literal `{z}/{x}/{y}` that must not be broken by
+  naive string interpolation).
+- `src/scout/app/project_context.py`: `ProjectContext` (open DB connection
+  + `EarthEngineBackend` + `ExplorationState`) and `ExplorationState`
+  itself is the concrete implementation of "exploration touches no
+  database row" — it's a plain dataclass with no persistence until a
+  sample/response/pin is explicitly saved.
+- `src/scout/app/main_window.py`: the full menu bar (File/Edit/View/
+  Layer/Sample/Run/Batch/Tools/Window/Help), main toolbar + 4 specialist
+  toolbars (HSV/Latent Inspection/Batch/Compare — present and hideable via
+  `View > Toolbars` now, populated with real actions as those features
+  land), 5 dock panels all listed under `View > Panels`, Clean Map Mode,
+  and — the actual golden path — `run_ae_similarity()`: reference geometry
+  from the map → `EarthEngineBackend.run_similarity()` → absolute or
+  percentile threshold → `ee.Image.getMapId()` → tile layer added to both
+  the map and the Layers panel.
+- `src/scout/app/panels/`: `LayersPanel` (grouped/checkable tree — the six
+  fixed groups from ARCHITECTURE.md), `ActivityLogPanel` (renders
+  `repository.list_activity` rows — the automated logger, visibly wired
+  now, not just a DB table), `AttributeTablePanel` (multi-select +
+  archive/delete/compare-selected context menu — the concrete fix for "no
+  remove/archive pin control yet"), `BatchQueuePanel` (table + post-queue
+  action selector, not yet wired to a real job runner), `ProbeInspectorPanel`
+  (Summary/AE64/Spectral/DW/Raw tabs, **Raw tab wrapped in a QScrollArea**
+  — the direct fix for "Probe Raw pane overflows inspector"), and a
+  genuinely working `PythonConsolePanel` (a real `code.InteractiveInterpreter`
+  REPL bound to `project_context`, not a stub).
+- **56/56 tests passing.** Caught and fixed one real test bug during this
+  session: a Clean Map Mode visibility test passed vacuously because the
+  test window was never `.show()`n — Qt's hierarchical visibility model
+  means an unshown top-level window makes every child report
+  `isVisible() == False` regardless of its own state, so the test wasn't
+  exercising anything. Fixed by showing the window in the fixture, with a
+  comment explaining why, so it doesn't get "simplified" away later.
+- **What's still simulated, not real**: every EE call in these tests goes
+  through a `MagicMock()` in place of the `ee` module — there has been no
+  Earth Engine authentication available in this sandbox at any point, so
+  the actual network round-trip (real AlphaEarth tiles rendering on a real
+  map) has never been exercised. That's the first thing to check by hand
+  once Task #7 (EE OAuth login) exists and runs somewhere with real
+  credentials and a display.
+- **New limitation worth tracking**: the Esri World Imagery / OpenStreetMap
+  base layers are for visual context only, exactly like the GEE
+  prototype's "Clean Map" Google basemap — Scout still has no bundled
+  Google/Bing satellite key, so if a Google-specific basemap look is
+  wanted later, that's a user-supplied API key + a new base style, not
+  something to build speculatively now.
+- Next: EE OAuth login flow (Task #7), then GitHub Actions Windows
+  PyInstaller build (Task #8).
+
 <!-- New entries go above this line, most recent first is fine as long as
      each entry is dated and self-contained. -->
