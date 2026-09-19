@@ -4,6 +4,29 @@ Running log of what's been built, in what order, and why — kept so an
 autonomous or resumed session can pick up accurately without re-deriving
 context, and so you have a readable trail of the overnight build.
 
+## 2026-09-19 01:46 UTC — First green Windows CI run
+
+Run [35413478429](https://github.com/GroundTruthGovernance/Scout/actions/runs/35413478429)
+(commit `eb47232`, the QtWebEngine teardown fix) **passed** — tests green
+and the PyInstaller build completed, producing a downloadable
+`scout-windows-eb472322…` artifact (260MB zipped) from the Actions tab.
+The `--disable-gpu`/event-flush fix from the previous entry was correct.
+
+This is the point where "the golden path is wired" stops being a claim
+this sandbox can only simulate and becomes something actually built and
+running on the target OS — **with one big caveat**: CI only proves the
+app *starts and its own test suite passes* on Windows. It says nothing
+about whether a real AlphaEarth similarity mask actually renders on a
+real map, because that needs a real Google account signed in via the
+OAuth flow (Task #7) and a real network path to Earth Engine — neither
+exists in CI or in this sandbox. **That end-to-end check is still the
+first thing to do by hand** once you're at a keyboard: pull the branch,
+run `scout`, sign in, draw a polygon, hit Run AE, and see if a mask
+actually shows up. Everything upstream of that moment is now verified;
+that moment itself still isn't.
+
+Continuing into Task #9 (stretch features) with the remaining time.
+
 ## 2026-09-19 — Session 1: scaffold
 
 - Repository was empty; this is the first commit.
