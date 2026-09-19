@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from scout.core import repository as repo
-from scout.core.models import LatentSignature, Pin
+from scout.core.models import Figure, LatentSignature, Pin
 from scout.core.power import perform_power_action
 from scout.core.report_composer import compose_session_report
 from scout.core.util import get_ae_vis, utc_now_iso
@@ -42,6 +43,7 @@ from scout.app.panels.python_console_panel import PythonConsolePanel
 from scout.app.project_context import ProjectContext
 from scout.app.ee_auth_worker import EarthEngineSignInWorker
 from scout.app.dialogs.new_project_dialog import NewProjectDialog
+from scout.app.dialogs.figure_capture_dialog import FigureCaptureDialog
 
 
 class MainWindow(QMainWindow):
@@ -145,6 +147,7 @@ class MainWindow(QMainWindow):
         # Tools
         self.action_sign_in_ee = QAction("&Sign in to Earth Engine…", self)
         self.action_sign_out_ee = QAction("Sign &out of Earth Engine", self)
+        self.action_capture_figure = QAction("Capture &Figure…", self)
         self.action_compose_report = QAction("&Compose Session Report…", self)
 
         # View
@@ -199,6 +202,7 @@ class MainWindow(QMainWindow):
 
         tools_menu = menu_bar.addMenu("&Tools")
         tools_menu.addAction(self.python_console_dock.toggleViewAction())
+        tools_menu.addAction(self.action_capture_figure)
         tools_menu.addAction(self.action_compose_report)
         tools_menu.addSeparator()
         tools_menu.addAction(self.action_sign_in_ee)
@@ -249,6 +253,7 @@ class MainWindow(QMainWindow):
         self.action_add_to_queue.triggered.connect(self._add_current_run_to_queue)
         self.batch_queue_panel.run_queue_requested.connect(self.run_batch_queue)
         self.action_save_latent_signature.triggered.connect(self._save_as_latent_signature)
+        self.action_capture_figure.triggered.connect(self._capture_figure)
         self.action_compose_report.triggered.connect(self._compose_session_report)
 
         self.map_panel.bridge.polygon_drawn.connect(self._on_polygon_drawn)
@@ -749,6 +754,46 @@ class MainWindow(QMainWindow):
         self._refresh_ee_auth_label()
         self.set_status("Signed out of Earth Engine.")
         self.context.log("info", "Earth Engine sign-out.")
+
+    def _capture_figure(self) -> None:
+        """Screenshots the map widget itself — real basemap tiles plus
+        whatever overlays are currently shown — rather than rendering an
+        EE thumbnail via getThumbURL(), which is exactly the GEE
+        prototype's known limitation this sidesteps: getThumbURL() only
+        ever rendered EE imagery, never the basemap underneath it."""
+        if self.context.project is None:
+            self.set_status("Open or create a project before capturing a figure.", error=True)
+            return
+
+        dialog = FigureCaptureDialog(self)
+        if dialog.exec() != FigureCaptureDialog.Accepted:
+            return
+        values = dialog.values()
+        if values is None:
+            return
+
+        try:
+            project_key = self.context.project.project_key
+            figure_id = f"{project_key}-FIG-{uuid.uuid4().hex[:8]}"
+            figures_dir = Path(self.context.db_path).parent / "figures"
+            figures_dir.mkdir(parents=True, exist_ok=True)
+            image_path = figures_dir / f"{figure_id}.png"
+
+            pixmap = self.map_panel.grab()
+            if not pixmap.save(str(image_path), "PNG"):
+                raise OSError(f"Qt could not write {image_path}")
+
+            figure = Figure(
+                figure_id=figure_id, project_key=project_key, figure_title=values["title"],
+                caption=values["caption"], image_path=f"figures/{image_path.name}",
+                created_utc=utc_now_iso(),
+            )
+            repo.insert_figure(self.context.conn, figure)
+            self.set_status(f"{figure_id} captured.")
+            self.context.log("info", f"{figure_id} captured.", related_object_id=figure_id)
+        except Exception as exc:  # noqa: BLE001 — surfaced to the user, not swallowed
+            self.set_status(f"Capturing figure failed: {exc}", error=True)
+            self.context.log("error", f"Capturing figure failed: {exc}")
 
     def _compose_session_report(self) -> None:
         if self.context.project is None:

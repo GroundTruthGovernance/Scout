@@ -1,5 +1,36 @@
 # Dev log
 
+## 2026-09-19 — Session 1 continued: figure capture — the schema-only backlog is now empty
+
+- `app/dialogs/figure_capture_dialog.py` (title required, caption
+  optional) + `Tools > Capture Figure…`: screenshots the map widget
+  itself via `QWidget.grab()` — real basemap tiles plus whatever
+  overlays are currently shown — rather than rendering an EE thumbnail
+  via `getThumbURL()`. This is the direct fix for the GEE prototype's
+  own documented limitation ("Figure PNG cannot include Google Satellite
+  basemap — `getThumbURL()` renders EE imagery, not the Google map UI"):
+  a standalone app compositing its own map doesn't have that problem,
+  because the "basemap" is just another layer in the same widget being
+  screenshotted, not a separate service GEE never gave API access to.
+  Saves the PNG under `<project folder>/figures/`, alongside the
+  `.scout.db` file, and stores a project-relative path in the `Figure`
+  row — so the project folder stays portable (db + figures + assets
+  travel together) rather than embedding an absolute path that breaks
+  the moment the folder moves.
+- Verified for real, not just mocked: `test_capture_figure_saves_png_and_row`
+  actually calls `.grab()` on the live `QWebEngineView`-backed map panel
+  under this sandbox's `QT_QPA_PLATFORM=offscreen`, saves a real PNG, and
+  asserts the file exists with nonzero size. This is a genuine (if
+  currently blank-ish, since there's no real network/GPU here) exercise
+  of the exact code path production will run — one of the few things
+  tonight that isn't just "tested against a mock."
+- **145/145 tests passing, exit code 0 confirmed.**
+- With this, **every item from the Task 9 closing summary's "still
+  schema-only" list is now wired end to end**: pin groups, pin tags,
+  probe pin extraction, and figure capture. The report composer can now
+  produce a report with real captured figures, not just the locations
+  table.
+
 ## 2026-09-19 — Session 1 continued: probe (multi-dataset) pin extraction
 
 CI for the pin groups/tags commit (59ed04c) confirmed green — sixth

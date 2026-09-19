@@ -639,6 +639,43 @@ def test_refresh_pins_reloads_saved_pins_after_reopen(window, tmp_path):
     )
 
 
+def test_capture_figure_requires_project(window):
+    window._capture_figure()
+    assert "project" in window.status_bar.currentMessage().lower()
+
+
+def test_capture_figure_cancelled_dialog_saves_nothing(window, tmp_path, monkeypatch):
+    from scout.app.dialogs.figure_capture_dialog import FigureCaptureDialog
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    monkeypatch.setattr(FigureCaptureDialog, "exec", lambda self: FigureCaptureDialog.Rejected)
+
+    window._capture_figure()
+    assert repo.list_figures(window.context.conn, "SOL-RUG-CRK") == []
+
+
+def test_capture_figure_saves_png_and_row(window, tmp_path, monkeypatch):
+    from scout.app.dialogs.figure_capture_dialog import FigureCaptureDialog
+    from scout.core import repository as repo
+
+    db_path = tmp_path / "p.scout.db"
+    window.context.new_project(db_path, "SOL", "RUG", "CRK")
+    monkeypatch.setattr(FigureCaptureDialog, "exec", lambda self: FigureCaptureDialog.Accepted)
+    monkeypatch.setattr(FigureCaptureDialog, "values", lambda self: {"title": "S01 edge pixel", "caption": "note"})
+
+    window._capture_figure()
+
+    figures = repo.list_figures(window.context.conn, "SOL-RUG-CRK")
+    assert len(figures) == 1
+    assert figures[0]["figure_title"] == "S01 edge pixel"
+    assert figures[0]["caption"] == "note"
+    saved_file = tmp_path / figures[0]["image_path"]
+    assert saved_file.exists()
+    assert saved_file.stat().st_size > 0
+    assert "captured" in window.status_bar.currentMessage().lower()
+
+
 def test_compose_session_report_requires_project(window):
     window._compose_session_report()
     assert "project" in window.status_bar.currentMessage().lower()
