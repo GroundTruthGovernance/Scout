@@ -35,6 +35,7 @@ from scout.app.panels.layers_panel import LayersPanel
 from scout.app.panels.map_panel import MapPanel
 from scout.app.panels.python_console_panel import PythonConsolePanel
 from scout.app.project_context import ProjectContext
+from scout.app.ee_auth_worker import EarthEngineSignInWorker
 
 
 class MainWindow(QMainWindow):
@@ -45,6 +46,7 @@ class MainWindow(QMainWindow):
 
         self.context = context or ProjectContext()
         self._current_response_layer_id: str | None = None
+        self._ee_sign_in_worker: EarthEngineSignInWorker | None = None
 
         self.map_panel = MapPanel(self)
         self.setCentralWidget(self.map_panel)
@@ -103,6 +105,9 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.coordinate_label = QLabel("", self)
         self.status_bar.addPermanentWidget(self.coordinate_label)
+        self.ee_auth_label = QLabel("", self)
+        self.status_bar.addPermanentWidget(self.ee_auth_label)
+        self._refresh_ee_auth_label()
         self.set_status("Ready.")
 
     def _build_actions(self) -> None:
@@ -126,6 +131,7 @@ class MainWindow(QMainWindow):
 
         # Tools
         self.action_sign_in_ee = QAction("&Sign in to Earth Engine…", self)
+        self.action_sign_out_ee = QAction("Sign &out of Earth Engine", self)
 
         # View
         self.action_clean_map = QAction("&Clean Map Mode", self, checkable=True)
@@ -175,7 +181,9 @@ class MainWindow(QMainWindow):
 
         tools_menu = menu_bar.addMenu("&Tools")
         tools_menu.addAction(self.python_console_dock.toggleViewAction())
+        tools_menu.addSeparator()
         tools_menu.addAction(self.action_sign_in_ee)
+        tools_menu.addAction(self.action_sign_out_ee)
 
         window_menu = menu_bar.addMenu("&Window")
         window_menu.addAction("Reset Layout")
@@ -215,6 +223,8 @@ class MainWindow(QMainWindow):
         self.action_run_ae.triggered.connect(self.run_ae_similarity)
         self.action_clean_map.toggled.connect(self._on_clean_map_toggled)
         self.action_about.triggered.connect(self._show_about)
+        self.action_sign_in_ee.triggered.connect(self._sign_in_to_earth_engine)
+        self.action_sign_out_ee.triggered.connect(self._sign_out_of_earth_engine)
 
         self.map_panel.bridge.polygon_drawn.connect(self._on_polygon_drawn)
         self.map_panel.bridge.point_clicked.connect(self._on_point_clicked)
@@ -294,6 +304,9 @@ class MainWindow(QMainWindow):
         if not geojson_text:
             self.set_status("Draw a reference polygon first.", error=True)
             return
+        if not self.context.ee_auth.is_authenticated():
+            self.set_status("Sign in to Earth Engine first (Tools > Sign in to Earth Engine…).", error=True)
+            return
 
         ee = self.context.ee.ee
         try:
@@ -358,6 +371,38 @@ class MainWindow(QMainWindow):
             return
         rows = repo.list_samples(self.context.conn, self.context.project.project_key)
         self.attribute_table_panel.load_samples(rows)
+
+    # -- Earth Engine sign-in ---------------------------------------------
+
+    def _refresh_ee_auth_label(self) -> None:
+        signed_in = self.context.ee_auth.is_authenticated()
+        self.ee_auth_label.setText("EE: signed in" if signed_in else "EE: not signed in")
+
+    def _sign_in_to_earth_engine(self) -> None:
+        if self._ee_sign_in_worker is not None and self._ee_sign_in_worker.isRunning():
+            self.set_status("Earth Engine sign-in already in progress.")
+            return
+
+        self.set_status("Opening browser for Earth Engine sign-in…")
+        self._ee_sign_in_worker = EarthEngineSignInWorker(self.context.ee_auth)
+        self._ee_sign_in_worker.succeeded.connect(self._on_ee_sign_in_succeeded)
+        self._ee_sign_in_worker.failed.connect(self._on_ee_sign_in_failed)
+        self._ee_sign_in_worker.start()
+
+    def _on_ee_sign_in_succeeded(self) -> None:
+        self._refresh_ee_auth_label()
+        self.set_status("Signed in to Earth Engine.")
+        self.context.log("info", "Earth Engine sign-in succeeded.")
+
+    def _on_ee_sign_in_failed(self, message: str) -> None:
+        self._refresh_ee_auth_label()
+        self.set_status(f"Earth Engine sign-in failed: {message}", error=True)
+
+    def _sign_out_of_earth_engine(self) -> None:
+        self.context.ee_auth.sign_out()
+        self._refresh_ee_auth_label()
+        self.set_status("Signed out of Earth Engine.")
+        self.context.log("info", "Earth Engine sign-out.")
 
     def _show_about(self) -> None:
         QMessageBox.about(

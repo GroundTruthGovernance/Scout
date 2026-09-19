@@ -2,15 +2,30 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+from PySide6.QtCore import QEventLoop, QTimer
 
 from scout.app.main_window import MainWindow
 from scout.app.project_context import ProjectContext
 from scout.core.ee_backend import EarthEngineBackend
 
 
+def _pump_until_thread_done(worker, timeout_ms=5000):
+    """QThread.wait() blocks the calling thread but does not process Qt's
+    event queue, so a cross-thread queued signal (succeeded/failed) can
+    still be undelivered right after wait() returns. Run a real event loop
+    instead, quitting as soon as either signal fires."""
+    loop = QEventLoop()
+    worker.succeeded.connect(loop.quit)
+    worker.failed.connect(loop.quit)
+    QTimer.singleShot(timeout_ms, loop.quit)
+    loop.exec()
+
+
 @pytest.fixture
-def window(qapp):
-    context = ProjectContext(ee_backend=EarthEngineBackend(ee_module=MagicMock()))
+def window(qapp, qt_cleanup):
+    fake_auth = MagicMock()
+    fake_auth.is_authenticated.return_value = True
+    context = ProjectContext(ee_backend=EarthEngineBackend(ee_module=MagicMock()), ee_auth=fake_auth)
     win = MainWindow(context=context)
     win.show()  # dock/toolbar visibility is hierarchical in Qt — an unshown
     # top-level window makes every child report isVisible() == False
@@ -18,6 +33,8 @@ def window(qapp):
     # map mode test pass vacuously rather than actually exercising it.
     yield win
     win.close()
+    win.deleteLater()
+    qt_cleanup.flush()
 
 
 def test_window_title_and_menu_structure(window):
@@ -96,6 +113,46 @@ def test_clean_map_mode_hides_docks_and_status_bar(window):
     window.action_clean_map.setChecked(False)
     assert window.layers_dock.isVisible() is True
     assert window.status_bar.isVisible() is True
+
+
+def test_run_ae_similarity_requires_sign_in(window):
+    geojson = json.dumps({"type": "Polygon", "coordinates": [[[0, 0], [0, 1], [1, 1], [0, 0]]]})
+    window._on_polygon_drawn(geojson)
+    window.context.ee_auth.is_authenticated.return_value = False
+
+    window.run_ae_similarity()
+    assert "sign in" in window.status_bar.currentMessage().lower()
+
+
+def test_ee_auth_label_reflects_state(window):
+    window.context.ee_auth.is_authenticated.return_value = True
+    window._refresh_ee_auth_label()
+    assert "signed in" in window.ee_auth_label.text().lower()
+    assert "not" not in window.ee_auth_label.text().lower()
+
+    window.context.ee_auth.is_authenticated.return_value = False
+    window._refresh_ee_auth_label()
+    assert "not signed in" in window.ee_auth_label.text().lower()
+
+
+def test_sign_out_calls_auth_and_updates_label(window):
+    window._sign_out_of_earth_engine()
+    window.context.ee_auth.sign_out.assert_called_once()
+
+
+def test_sign_in_worker_success_updates_status(window):
+    window.context.ee_auth.is_authenticated.return_value = False
+    window._sign_in_to_earth_engine()
+    assert window._ee_sign_in_worker is not None
+    _pump_until_thread_done(window._ee_sign_in_worker)
+    assert "signed in" in window.status_bar.currentMessage().lower()
+
+
+def test_sign_in_worker_failure_updates_status(window):
+    window.context.ee_auth.authenticate_interactive.side_effect = RuntimeError("no browser available")
+    window._sign_in_to_earth_engine()
+    _pump_until_thread_done(window._ee_sign_in_worker)
+    assert "no browser available" in window.status_bar.currentMessage()
 
 
 def test_draw_polygon_and_add_pin_are_mutually_exclusive(window):

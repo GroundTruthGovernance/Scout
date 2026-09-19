@@ -27,7 +27,7 @@ def test_bridge_forwards_map_clicked_as_signal(qapp):
     assert received == [(0.0, 0.0)]
 
 
-def test_map_panel_loads_html_without_error(qapp):
+def test_map_panel_loads_html_without_error(qapp, qt_cleanup):
     panel = MapPanel()
 
     loop = QEventLoop()
@@ -42,4 +42,7 @@ def test_map_panel_loads_html_without_error(qapp):
     loop.exec()
 
     assert result.get("ok") is True, "map.html failed to load (see webmap/map.html + vendor/ assets)"
+
+    panel.view.setParent(None)
     panel.deleteLater()
+    qt_cleanup.flush()

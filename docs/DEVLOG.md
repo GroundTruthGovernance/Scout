@@ -211,5 +211,60 @@ an intermediate state that couldn't actually be exercised end to end.
   something this sandbox could have caught) and is the next thing to fix.
 - Next: EE OAuth login flow (Task #7).
 
+## 2026-09-19 — Session 1 continued: EE OAuth flow + first real Windows CI failure
+
+- `core/ee_auth.py`: `EarthEngineAuth` (same mockable-`ee`-module pattern
+  as `EarthEngineBackend`) — `is_authenticated()` (checks for a stored
+  credentials file, doesn't verify the token still works), `initialize()`,
+  `authenticate_interactive()` (blocking, opens a browser — genuinely
+  cannot be exercised in this sandbox: no browser, no network, no Google
+  account), `sign_out()` (deletes the stored credentials file).
+- `app/ee_auth_worker.py`: `EarthEngineSignInWorker(QThread)` so the
+  blocking browser flow doesn't freeze the UI. Wired into
+  `MainWindow`: a status-bar "EE: signed in / not signed in" indicator,
+  `Tools > Sign in to Earth Engine…` / `Sign out of Earth Engine`, and
+  `run_ae_similarity()` now checks `is_authenticated()` first and points
+  at the sign-in menu item instead of throwing a raw EE exception.
+- **First real Windows CI run happened this session** (triggered by the
+  previous packaging commit reaching GitHub) and it caught something this
+  sandbox could not have: all 56 tests passed, then **the Windows job
+  still failed** — `python.exe` exited non-zero during interpreter
+  shutdown, after pytest had already printed "56 passed". Root cause:
+  QtWebEngine's Chromium teardown hits a WebGL-blocklisted code path
+  (visible as `ContextResult::kFatalFailure: WebGL2/WebGL1 blocklisted` in
+  both the Windows CI log and, harmlessly, in this sandbox's local runs
+  too) and apparently doesn't unwind cleanly from it on Windows
+  specifically — this sandbox's Linux runs kept exiting 0 despite printing
+  the identical warning text, which is exactly why this needed a real
+  Windows run to surface at all.
+  - Fix: `tests/conftest.py` now sets `QTWEBENGINE_CHROMIUM_FLAGS=
+    --disable-gpu --disable-software-rasterizer --disable-gpu-compositing`
+    to avoid that code path entirely rather than trying to out-race it
+    during teardown, plus a session-end `QCoreApplication.processEvents()`
+    flush (deleteLater()-scheduled WebEngine profile/page objects only
+    actually get destroyed once the event loop runs again) and a
+    `qt_cleanup` fixture that `test_map_panel.py` / `test_main_window.py`
+    now use to explicitly close and flush their `MapPanel`/`MainWindow`
+    instances instead of leaving cleanup to interpreter exit.
+  - Verified locally that the GPU-disable flag actually removes the WebGL
+    warning lines entirely (they were present before, gone after) —
+    consistent with the flag avoiding the code path rather than just
+    silencing it. **Not yet confirmed this fixes the Windows exit code**
+    specifically, since this sandbox can't reproduce a Windows-only
+    process-exit-code bug — that confirmation is what the next CI run
+    (triggered by this commit) is for.
+- Take-away worth remembering across sessions: **this sandbox's "all
+  tests pass" is necessary but not sufficient** — it has no GPU, no
+  Windows, and cannot run PySide6 with hardware acceleration, so any bug
+  specific to those (like this one) will only ever show up in the
+  windows-latest CI run, not locally. Treat a green Windows Actions run,
+  not a green local `pytest`, as the actual bar for "this milestone
+  works."
+- Next: check the CI run this push triggers; if green, this is a natural
+  point to consider the core golden-path build "real" rather than
+  "simulated," and move to Task #9 stretch features (Layers panel
+  richness, pin groups/tags UI, latent signatures, batch queue wiring,
+  report composer) with the remaining time.
+
 <!-- New entries go above this line, most recent first is fine as long as
      each entry is dated and self-contained. -->

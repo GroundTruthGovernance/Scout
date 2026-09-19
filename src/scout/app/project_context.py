@@ -14,6 +14,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from scout.core import db, repository as repo
+from scout.core.ee_auth import EarthEngineAuth
 from scout.core.ee_backend import EarthEngineBackend
 from scout.core.models import Project, project_key as make_project_key
 from scout.core.util import utc_now_iso
@@ -44,12 +45,16 @@ class ProjectContext(QObject):
     project_closed = Signal()
     activity_logged = Signal(str, str)   # level, message
 
-    def __init__(self, ee_backend: EarthEngineBackend | None = None, parent=None):
+    def __init__(
+        self, ee_backend: EarthEngineBackend | None = None,
+        ee_auth: EarthEngineAuth | None = None, parent=None,
+    ):
         super().__init__(parent)
         self.conn: sqlite3.Connection | None = None
         self.db_path: Path | None = None
         self.project: Project | None = None
         self.ee = ee_backend or EarthEngineBackend()
+        self.ee_auth = ee_auth or EarthEngineAuth()
         self.exploration = ExplorationState()
 
     # -- Lifecycle ------------------------------------------------------
