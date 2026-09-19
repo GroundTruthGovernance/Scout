@@ -1,5 +1,63 @@
 # Dev log
 
+## 2026-09-19 — Session 1 continued: pin groups + tags, and a real gap closed
+
+Task #10 (opened after Task #9's close, since this was flagged as
+schema-only and worth finishing rather than leaving as a documented gap):
+
+- **Pin groups**: `Sample > New Pin Group…` creates a `pin_groups` row and
+  a matching subgroup node under "Pins" in the Layers panel
+  (`LayersPanel.ensure_pin_group()` — reuses an existing node by name
+  rather than duplicating). Right-click a pin marker → "Move to group…"
+  lists existing groups plus "(no group)", updates `pins.group_id`, and
+  relocates the tree item (`LayersPanel.move_pin_to_group()`), preserving
+  its checked state and label rather than resetting them.
+- **Tags**: right-click a pin → "Edit tags…" shows the current
+  comma-separated tags pre-filled, `repo.set_pin_tags()` replaces the
+  full set (not an incremental add) since that's what a single text
+  field editing them naturally implies.
+- **`LayersPanel._find_layer_item()` had to become a real tree walk**
+  rather than one level deep, since pins can now sit two levels down
+  (Pins → subgroup → pin). Worth flagging because this is exactly the
+  kind of change that's easy to get subtly wrong (recursion base case,
+  not finding items in newly-added subgroups) without a test that
+  actually nests three levels and searches for the innermost item —
+  `test_add_pin_marker_with_group_creates_subgroup` and
+  `test_move_pin_to_group_relocates_and_preserves_state` both do.
+- **Fixed a real gap while wiring this, not a stretch item**: opening a
+  project previously left all of its previously-saved pins invisible —
+  nothing reloaded them into the Layers panel or the map on open, only
+  freshly-dropped pins ever appeared. `MainWindow.refresh_pins()` now
+  clears and reloads every active pin (with its group) on both New
+  Project and Open Project, and `MapPanel.clear_markers()` /
+  `webmap/map.js`'s `clearMarkers()` were added so repeated reloads don't
+  accumulate duplicate markers.
+- **Testability note worth remembering**: `QMenu.exec()` is a PySide6
+  bound C++ method, and monkeypatching it directly at the class level
+  (`monkeypatch.setattr(QMenu, "exec", fake_fn)`) silently does not take
+  effect — the real method still runs and throws a signature-mismatch
+  `TypeError` on whatever test argument was passed. That error looks like
+  an app bug at first glance; it's actually the patch never having taken
+  effect. Fixed by wrapping the call in a plain Python method
+  (`MainWindow._exec_menu()`) specifically so tests patch *that* instead
+  of trying to intercept the C++ binding.
+- **132/132 tests passing, exit code 0 confirmed.**
+- Still schema-only after this pass: multi-dataset **probe** pin
+  extraction (only "observation" pins run end to end) and a
+  figure-capture action for the report composer. Both remain reasonable,
+  well-scoped next-session work.
+
+## 2026-09-19 02:28 UTC — CI confirmed green through Task 9's close
+
+Run [35415508809](https://github.com/GroundTruthGovernance/Scout/actions/runs/35415508809)
+(commit `aea06a7`, report composer + New Project dialog) **passed** — the
+fifth consecutive green Windows run since the teardown fix. Task 9's
+scope is genuinely done and documented in the closing summary below.
+About 1.5 hours of the requested overnight window used so far; picking
+up the next-priority item from that summary (pin groups/tags UI) rather
+than stopping here, since it's a real, already-scoped piece of work, not
+manufactured busywork.
+
 ## 2026-09-19 02:06 UTC — Second green Windows CI run
 
 Run [35414504953](https://github.com/GroundTruthGovernance/Scout/actions/runs/35414504953)

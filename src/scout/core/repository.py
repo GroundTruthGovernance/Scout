@@ -364,6 +364,32 @@ def set_pin_status(conn: sqlite3.Connection, pin_id: str, status: str) -> None:
     conn.commit()
 
 
+def set_pin_group(conn: sqlite3.Connection, pin_id: str, group_id: int | None) -> None:
+    conn.execute(
+        "UPDATE pins SET group_id = ?, modified_utc = ? WHERE pin_id = ?",
+        (group_id, utc_now_iso(), pin_id),
+    )
+    conn.commit()
+
+
+def get_pin_group(conn: sqlite3.Connection, group_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM pin_groups WHERE group_id = ?", (group_id,)).fetchone()
+
+
+def get_pin_tags(conn: sqlite3.Connection, pin_id: str) -> list[str]:
+    rows = conn.execute("SELECT tag FROM pin_tags WHERE pin_id = ? ORDER BY tag", (pin_id,)).fetchall()
+    return [r["tag"] for r in rows]
+
+
+def set_pin_tags(conn: sqlite3.Connection, pin_id: str, tags: list[str]) -> None:
+    """Replaces every tag on a pin with exactly this set — the UI edits
+    tags as one comma-separated field, not incrementally."""
+    with transaction(conn):
+        conn.execute("DELETE FROM pin_tags WHERE pin_id = ?", (pin_id,))
+        for tag in {t.strip() for t in tags if t.strip()}:
+            conn.execute("INSERT INTO pin_tags (pin_id, tag) VALUES (?, ?)", (pin_id, tag))
+
+
 # ---------------------------------------------------------------------
 # Latent signatures
 # ---------------------------------------------------------------------

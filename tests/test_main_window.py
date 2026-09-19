@@ -180,8 +180,8 @@ def test_pin_drop_creates_pin_row_and_marker(window, tmp_path):
     window.map_panel.add_marker.assert_called_once_with(
         "SOL-RUG-CRK-OBS-001", -2.7, 53.7, popup_text="SOL-RUG-CRK-OBS-001"
     )
-    window.layers_panel.add_layer.assert_called_once_with(
-        "Pins", "SOL-RUG-CRK-OBS-001", "SOL-RUG-CRK-OBS-001", kind="marker"
+    window.layers_panel.add_pin_marker.assert_called_once_with(
+        "SOL-RUG-CRK-OBS-001", "SOL-RUG-CRK-OBS-001"
     )
 
 
@@ -406,6 +406,126 @@ def test_new_project_wiring_cancelled_dialog_creates_nothing(window, monkeypatch
 
     window._prompt_new_project()
     assert window.context.project is None
+
+
+def test_new_pin_group_requires_project(window):
+    window._prompt_new_pin_group()
+    assert "project" in window.status_bar.currentMessage().lower()
+
+
+def test_new_pin_group_creates_row_and_layers_panel_node(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("Seep line", True)))
+
+    window._prompt_new_pin_group()
+
+    groups = repo.list_pin_groups(window.context.conn, "SOL-RUG-CRK")
+    assert [g["name"] for g in groups] == ["Seep line"]
+    assert window.layers_panel._groups["Pins"].childCount() == 1
+    window.layers_panel.ensure_pin_group("Seep line")  # calling again must reuse, not duplicate
+    assert window.layers_panel._groups["Pins"].childCount() == 1
+
+
+def test_new_pin_group_cancelled_dialog_creates_nothing(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("", False)))
+
+    window._prompt_new_pin_group()
+    assert repo.list_pin_groups(window.context.conn, "SOL-RUG-CRK") == []
+
+
+def test_move_pin_to_group_updates_db_and_panel(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.action_add_pin.setChecked(True)
+    window._on_point_clicked(0.0, 0.0)
+    pin_id = "SOL-RUG-CRK-OBS-001"
+    repo.create_pin_group(window.context.conn, "SOL-RUG-CRK", "Seep line")
+
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(lambda *a, **k: ("Seep line", True)))
+    window._prompt_move_pin_to_group(pin_id)
+
+    pin_row = repo.list_pins(window.context.conn, "SOL-RUG-CRK")[0]
+    group_row = repo.get_pin_group(window.context.conn, pin_row["group_id"])
+    assert group_row["name"] == "Seep line"
+    item = window.layers_panel._find_layer_item(pin_id)
+    assert item.parent().text(0) == "Seep line"
+
+
+def test_move_pin_to_group_none_option_clears_group(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.action_add_pin.setChecked(True)
+    window._on_point_clicked(0.0, 0.0)
+    pin_id = "SOL-RUG-CRK-OBS-001"
+
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(lambda *a, **k: ("(no group)", True)))
+    window._prompt_move_pin_to_group(pin_id)
+
+    pin_row = repo.list_pins(window.context.conn, "SOL-RUG-CRK")[0]
+    assert pin_row["group_id"] is None
+
+
+def test_edit_pin_tags_replaces_tags(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+    from scout.core import repository as repo
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    window.action_add_pin.setChecked(True)
+    window._on_point_clicked(0.0, 0.0)
+    pin_id = "SOL-RUG-CRK-OBS-001"
+
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("panel-edge, calibration", True)))
+    window._prompt_edit_pin_tags(pin_id)
+
+    assert repo.get_pin_tags(window.context.conn, pin_id) == ["calibration", "panel-edge"]
+
+
+def test_pin_context_menu_dispatches_to_move_or_tags(window, monkeypatch):
+    calls = []
+    monkeypatch.setattr(window, "_prompt_move_pin_to_group", lambda pin_id: calls.append(("move", pin_id)))
+    monkeypatch.setattr(window, "_prompt_edit_pin_tags", lambda pin_id: calls.append(("tags", pin_id)))
+
+    # "Move to group…" is the first action added — exercise that branch.
+    monkeypatch.setattr(window, "_exec_menu", lambda menu, pos: menu.actions()[0])
+    window._on_pin_context_menu("pin-1", None)
+    assert calls == [("move", "pin-1")]
+
+    # "Edit tags…" is the second action added — exercise that branch too.
+    calls.clear()
+    monkeypatch.setattr(window, "_exec_menu", lambda menu, pos: menu.actions()[1])
+    window._on_pin_context_menu("pin-1", None)
+    assert calls == [("tags", "pin-1")]
+
+
+def test_refresh_pins_reloads_saved_pins_after_reopen(window, tmp_path):
+    from scout.core import repository as repo
+
+    db_path = tmp_path / "p.scout.db"
+    window.context.new_project(db_path, "SOL", "RUG", "CRK")
+    window.action_add_pin.setChecked(True)
+    window._on_point_clicked(-2.7, 53.7)
+    window.context.close()
+
+    window.context.open_project(db_path)
+    window.map_panel = MagicMock()
+    window.refresh_pins()
+
+    item = window.layers_panel._find_layer_item("SOL-RUG-CRK-OBS-001")
+    assert item is not None
+    window.map_panel.add_marker.assert_called_once_with(
+        "SOL-RUG-CRK-OBS-001", -2.7, 53.7, popup_text="SOL-RUG-CRK-OBS-001"
+    )
 
 
 def test_compose_session_report_requires_project(window):

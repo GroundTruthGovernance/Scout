@@ -182,6 +182,51 @@ def test_pin_groups_and_tags(conn, project):
     assert repo.list_pins(conn, project.project_key, include_archived=True) == []  # deleted never returns
 
 
+def test_set_pin_group_moves_pin_between_groups(conn, project):
+    group_a = repo.create_pin_group(conn, project.project_key, "Group A")
+    group_b = repo.create_pin_group(conn, project.project_key, "Group B")
+    pin = Pin(
+        pin_id="SOL-RUG-CRK-OBS-001", pin_type="observation", project_key=project.project_key,
+        lon=0.0, lat=0.0, group_id=group_a, created_utc=utc_now_iso(), modified_utc=utc_now_iso(),
+    )
+    repo.insert_pin(conn, pin)
+
+    assert repo.list_pins(conn, project.project_key, group_id=group_a)[0]["pin_id"] == pin.pin_id
+
+    repo.set_pin_group(conn, pin.pin_id, group_b)
+    assert repo.list_pins(conn, project.project_key, group_id=group_a) == []
+    assert repo.list_pins(conn, project.project_key, group_id=group_b)[0]["pin_id"] == pin.pin_id
+
+    repo.set_pin_group(conn, pin.pin_id, None)
+    moved = repo.list_pins(conn, project.project_key, group_id=group_b)
+    assert moved == []
+
+
+def test_get_pin_group_returns_row(conn, project):
+    group_id = repo.create_pin_group(conn, project.project_key, "Fylde manifestations")
+    row = repo.get_pin_group(conn, group_id)
+    assert row["name"] == "Fylde manifestations"
+    assert repo.get_pin_group(conn, 99999) is None
+
+
+def test_set_pin_tags_replaces_not_appends(conn, project):
+    pin = Pin(
+        pin_id="SOL-RUG-CRK-OBS-001", pin_type="observation", project_key=project.project_key,
+        lon=0.0, lat=0.0, tags=["a", "b"], created_utc=utc_now_iso(), modified_utc=utc_now_iso(),
+    )
+    repo.insert_pin(conn, pin)
+    assert repo.get_pin_tags(conn, pin.pin_id) == ["a", "b"]
+
+    repo.set_pin_tags(conn, pin.pin_id, ["c"])
+    assert repo.get_pin_tags(conn, pin.pin_id) == ["c"]
+
+    repo.set_pin_tags(conn, pin.pin_id, ["", "  ", "d"])  # blanks stripped
+    assert repo.get_pin_tags(conn, pin.pin_id) == ["d"]
+
+    repo.set_pin_tags(conn, pin.pin_id, [])
+    assert repo.get_pin_tags(conn, pin.pin_id) == []
+
+
 def test_latent_signature_nullable_origin(conn, project):
     imported = LatentSignature(
         signature_id="SOL-RUG-CRK-SIG-001", project_key=project.project_key,

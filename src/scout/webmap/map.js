@@ -264,6 +264,14 @@
     marker.getElement().style.display = visible ? "" : "none";
   }
 
+  function clearMarkers(paneId) {
+    const pane = paneOrThrow(paneId);
+    Object.keys(pane.markers).forEach(function (markerId) {
+      pane.markers[markerId].remove();
+    });
+    pane.markers = {};
+  }
+
   window.scoutMap = {
     createMap: createMap,
     setBaseStyle: setBaseStyle,
@@ -279,6 +287,7 @@
     addMarker: addMarker,
     removeMarker: removeMarker,
     setMarkerVisible: setMarkerVisible,
+    clearMarkers: clearMarkers,
   };
 
   if (typeof qt !== "undefined" && qt.webChannelTransport) {

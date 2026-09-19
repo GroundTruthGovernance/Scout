@@ -134,3 +134,6 @@ class MapPanel(QWidget):
             "window.scoutMap.setMarkerVisible(%s, %s, %s);"
             % (json.dumps(self.PANE_ID), json.dumps(marker_id), "true" if visible else "false")
         )
+
+    def clear_markers(self) -> None:
+        self._run_js(f'window.scoutMap.clearMarkers("{self.PANE_ID}");')

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QStatusBar,
     QToolBar,
@@ -128,6 +129,7 @@ class MainWindow(QMainWindow):
         self.action_draw_polygon = QAction("Draw &Polygon", self, checkable=True)
         self.action_add_pin = QAction("Add &Pin", self, checkable=True)
         self.action_clear_geometry = QAction("&Clear Drawn Geometry", self)
+        self.action_new_pin_group = QAction("&New Pin Group…", self)
 
         # Run
         self.action_run_ae = QAction("&Run AE Similarity", self)
@@ -182,6 +184,8 @@ class MainWindow(QMainWindow):
         sample_menu.addAction(self.action_draw_polygon)
         sample_menu.addAction(self.action_add_pin)
         sample_menu.addAction(self.action_clear_geometry)
+        sample_menu.addSeparator()
+        sample_menu.addAction(self.action_new_pin_group)
 
         run_menu = menu_bar.addMenu("&Run")
         run_menu.addAction(self.action_run_ae)
@@ -248,6 +252,8 @@ class MainWindow(QMainWindow):
 
         self.context.activity_logged.connect(self._on_activity_logged)
         self.layers_panel.layer_visibility_changed.connect(self._on_layer_visibility_changed)
+        self.layers_panel.pin_context_menu_requested.connect(self._on_pin_context_menu)
+        self.action_new_pin_group.triggered.connect(self._prompt_new_pin_group)
 
     # -- File menu handlers -------------------------------------------------
 
@@ -272,6 +278,7 @@ class MainWindow(QMainWindow):
             self.refresh_activity_log()
             self.refresh_attribute_table()
             self.refresh_batch_queue()
+            self.refresh_pins()
         except ValueError as exc:
             QMessageBox.critical(self, "New Project", str(exc))
 
@@ -285,6 +292,7 @@ class MainWindow(QMainWindow):
             self.refresh_activity_log()
             self.refresh_attribute_table()
             self.refresh_batch_queue()
+            self.refresh_pins()
         except ValueError as exc:
             QMessageBox.critical(self, "Open Project", str(exc))
 
@@ -335,11 +343,83 @@ class MainWindow(QMainWindow):
         )
         repo.insert_pin(self.context.conn, pin)
         self.map_panel.add_marker(pin.pin_id, lon, lat, popup_text=pin.pin_id)
-        self.layers_panel.add_layer("Pins", pin.pin_id, pin.pin_id, kind="marker")
+        self.layers_panel.add_pin_marker(pin.pin_id, pin.pin_id)
         self.context.log("info", f"{pin.pin_id} added.", related_object_id=pin.pin_id)
 
     def _on_map_clicked(self, lon: float, lat: float) -> None:
         self.coordinate_label.setText(f"Lon {lon:.6f}  Lat {lat:.6f}")
+
+    # -- Pin groups + tags -------------------------------------------------
+
+    def _prompt_new_pin_group(self) -> None:
+        if self.context.project is None:
+            self.set_status("Open or create a project before adding a pin group.", error=True)
+            return
+        name, ok = QInputDialog.getText(self, "New Pin Group", "Group name:")
+        if not ok or not name.strip():
+            return
+        repo.create_pin_group(self.context.conn, self.context.project.project_key, name.strip())
+        self.layers_panel.ensure_pin_group(name.strip())
+        self.set_status(f"Pin group '{name.strip()}' created.")
+
+    def _on_pin_context_menu(self, pin_id: str, global_pos) -> None:
+        menu = QMenu(self)
+        move_action = menu.addAction("Move to group…")
+        tags_action = menu.addAction("Edit tags…")
+        chosen = self._exec_menu(menu, global_pos)
+        if chosen is move_action:
+            self._prompt_move_pin_to_group(pin_id)
+        elif chosen is tags_action:
+            self._prompt_edit_pin_tags(pin_id)
+
+    def _exec_menu(self, menu: QMenu, global_pos):
+        """A thin, overridable wrapper around QMenu.exec() — PySide6's
+        bound C++ method can't be monkeypatched directly at the class
+        level the way a plain Python method can, so tests patch this
+        instead of QMenu.exec itself."""
+        return menu.exec(global_pos)
+
+    def _prompt_move_pin_to_group(self, pin_id: str) -> None:
+        groups = repo.list_pin_groups(self.context.conn, self.context.project.project_key)
+        no_group_label = "(no group)"
+        options = [no_group_label] + [g["name"] for g in groups]
+        choice, ok = QInputDialog.getItem(self, "Move to Group", "Group:", options, editable=False)
+        if not ok:
+            return
+        if choice == no_group_label:
+            repo.set_pin_group(self.context.conn, pin_id, None)
+            self.layers_panel.move_pin_to_group(pin_id, None)
+        else:
+            group_row = next(g for g in groups if g["name"] == choice)
+            repo.set_pin_group(self.context.conn, pin_id, group_row["group_id"])
+            self.layers_panel.move_pin_to_group(pin_id, choice)
+        self.set_status(f"{pin_id} moved to {choice}.")
+
+    def _prompt_edit_pin_tags(self, pin_id: str) -> None:
+        current = ", ".join(repo.get_pin_tags(self.context.conn, pin_id))
+        text, ok = QInputDialog.getText(self, "Edit Tags", "Comma-separated tags:", text=current)
+        if not ok:
+            return
+        tags = [t.strip() for t in text.split(",")]
+        repo.set_pin_tags(self.context.conn, pin_id, tags)
+        self.set_status(f"{pin_id} tags updated.")
+
+    def refresh_pins(self) -> None:
+        """Reloads every saved pin (and the groups they belong to) into
+        the Layers panel and the map — the real gap this closes: opening
+        a project previously left its saved pins invisible until the next
+        one was dropped."""
+        if self.context.conn is None or self.context.project is None:
+            return
+        project_key = self.context.project.project_key
+        self.layers_panel.clear_pins()
+        self.map_panel.clear_markers()
+
+        groups_by_id = {g["group_id"]: g["name"] for g in repo.list_pin_groups(self.context.conn, project_key)}
+        for pin in repo.list_pins(self.context.conn, project_key):
+            group_name = groups_by_id.get(pin["group_id"])
+            self.layers_panel.add_pin_marker(pin["pin_id"], pin["pin_id"], group_name=group_name)
+            self.map_panel.add_marker(pin["pin_id"], pin["lon"], pin["lat"], popup_text=pin["pin_id"])
 
     def _on_layer_visibility_changed(self, layer_id: str, visible: bool, kind: str) -> None:
         if kind == "marker":
