@@ -162,5 +162,54 @@ an intermediate state that couldn't actually be exercised end to end.
 - Next: EE OAuth login flow (Task #7), then GitHub Actions Windows
   PyInstaller build (Task #8).
 
+## 2026-09-19 — Session 1 continued: PyInstaller packaging + Windows CI
+
+- `packaging/scout.spec`: bundles `scout.core`'s `schema.sql` and all of
+  `scout.webmap` (html/js/css/vendor) via `collect_data_files`, plus `ee`
+  as a hidden import (Earth Engine's package does some dynamic-ish
+  imports PyInstaller's static analysis can miss).
+- **First attempt used `collect_all("PySide6")`** to make sure
+  `QtWebEngineProcess` and its locale/resource files were bundled — this
+  produced an 881MB build by pulling in every Qt module PySide6 ships
+  (Multimedia, Quick3D, WaylandCompositor, every SQL driver,
+  TextToSpeech, SpatialAudio…) regardless of whether Scout imports them.
+  Checked whether that was actually necessary: `pyinstaller-hooks-contrib`
+  2026.7 already ships dedicated `hook-PySide6.QtWebEngineWidgets.py` /
+  `hook-PySide6.QtWebEngineCore.py` hooks that bundle WebEngine's process
+  and resources automatically once `QWebEngineView` is detected as
+  imported — no manual `collect_all` needed. Removed it; **731MB**, most
+  of the remaining size being Chromium itself (which QtWebEngine always
+  ships) rather than anything prunable without risk. Not chased further
+  tonight — a `Analysis(excludes=[...])` pass to drop genuinely unused Qt
+  modules (Multimedia, TextToSpeech, Bluetooth, Sensors) is a reasonable
+  future size optimization, not attempted yet since verifying it doesn't
+  silently break QtWebEngine's own dependencies needs a real Windows test
+  cycle this sandbox can't do.
+- **Verified locally on Linux** (not the target platform, but validates
+  the spec's logic and the resource-bundling paths): built successfully
+  with `pyinstaller packaging/scout.spec`, then ran the frozen executable
+  under `QT_QPA_PLATFORM=offscreen` — it started and stayed running for
+  the full smoke-test window with no crash or traceback, which is a
+  reasonable signal that `schema.sql` and the webmap assets are being
+  found correctly inside a frozen bundle (a common way for this kind of
+  packaging to fail silently is exactly a missing/mislocated data file).
+  **This is not equivalent to a real Windows build/run** — PySide6's
+  Windows-specific binaries, the actual `.exe` extension, and Windows
+  file-path handling are all unverified until CI actually runs this.
+- `.github/workflows/build-windows.yml`: runs on `windows-latest`,
+  installs `.[dev,build]`, runs the test suite (`QT_QPA_PLATFORM:
+  offscreen` — no sandbox-disable flag needed on Windows, that was purely
+  a Linux-running-as-root workaround), then builds via the spec and
+  uploads `dist/Scout/` as a downloadable artifact. Triggers on push to
+  `main`/`master`/`claude/**` plus PRs and manual dispatch, specifically
+  so pushes to this session's branch produce a downloadable `.exe` you
+  can pull from the Actions tab without waiting for a PR.
+- **This is the first real point where genuine Windows verification can
+  happen without you at a keyboard** — once this push reaches GitHub,
+  Actions will actually build a `.exe`. Check the Actions tab for this
+  branch; if the workflow fails, that failure is real signal (not
+  something this sandbox could have caught) and is the next thing to fix.
+- Next: EE OAuth login flow (Task #7).
+
 <!-- New entries go above this line, most recent first is fine as long as
      each entry is dated and self-contained. -->
