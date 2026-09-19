@@ -1,5 +1,81 @@
 # Dev log
 
+## 2026-09-19 03:04 UTC — Session 1 close-out
+
+Final two CI runs both confirmed green:
+[35417153380](https://github.com/GroundTruthGovernance/Scout/actions/runs/35417153380)
+(probe pin extraction) and
+[35417274911](https://github.com/GroundTruthGovernance/Scout/actions/runs/35417274911)
+(figure capture) both passed. That's **8 consecutive green Windows CI
+runs** since the teardown-crash fix, and no red run left unaddressed at
+any point tonight.
+
+### The whole night, end to end
+
+Starting from an empty repository: **14 commits**, all 12 tracked tasks
+completed (the original 9-task plan, plus 3 more opened and closed after
+finishing that plan's own closing summary), **145 tests passing**, exit
+code 0 confirmed explicitly on every milestone rather than trusting
+pytest's summary line alone (that distinction is exactly what caught the
+one real bug this session hit — see the QtWebEngine teardown entry
+below).
+
+What exists now: a Python/PySide6 desktop app with an embedded MapLibre
+map, a real SQLite project database, the full AlphaEarth cosine-
+similarity/thresholding/HSV compute core ported from the GEE JS
+prototype, per-user Earth Engine OAuth, a working golden path (draw a
+polygon → run AE → a response layer renders), sample/pin/probe/latent-
+signature/figure saving, a batch queue with real (confirmed, injectable)
+post-batch sleep/shutdown, a session-report composer, and Windows CI that
+produces a downloadable `.exe` on every push. Every item flagged as
+"still schema-only" after the first pass at Task 9 has since been closed:
+pin groups, pin tags, probe (multi-dataset) pin extraction, and figure
+capture.
+
+### What has genuinely NOT been verified — read this before trusting any of the above
+
+**Every single Earth Engine call in this entire session was tested
+against a mocked `ee` module.** There has been no browser, no Google
+account, and no network path to Earth Engine available in this sandbox
+at any point. That means: the OAuth sign-in flow has never actually run,
+no real AlphaEarth tile has ever been requested, and no similarity mask
+has ever actually rendered on a real map. Every test in this codebase
+proves the *orchestration logic* is correct — the right EE calls in the
+right order with the right arguments — not that the real service
+returns what's expected or that a real user can get through the sign-in
+flow without friction. **The first and most important thing to do with
+this build is: pull the branch, `pip install -e ".[dev]"`, run `scout`,
+sign in with a real Google account, draw a polygon, hit Run AE, and see
+whether an actual mask shows up.** Nothing else in this log matters if
+that doesn't work.
+
+### Next priorities for a future session, roughly in order
+
+1. The hands-on EE verification above — not code, but it gates
+   everything else being worth trusting.
+2. Configurability for probe/HSV sampling — radius, reducer, year, and
+   S2 season are all hardcoded to sensible defaults right now (5m/mean/
+   current reference year/summer) rather than exposed as controls, the
+   way the original GEE prototype had them.
+3. An attribute-table view for pins/probes/responses — the Attribute
+   Table dock currently only shows samples; the archive/delete affordance
+   that motivated building it doesn't yet reach the other object types.
+4. A Python console smoke test — `PythonConsolePanel` has never actually
+   been exercised by a test (it's real code, just unverified).
+5. Batch queue resume-after-restart — jobs left `queued` on disk if the
+   app closes mid-queue, but nothing currently resumes them on next
+   launch.
+6. Deeper pin group nesting — the schema supports arbitrary
+   `parent_group_id` nesting; the UI only goes one level deep under
+   "Pins" right now.
+7. An actual overview-map render for the report composer — it currently
+   only assembles manually-captured figures plus a locations table; an
+   automatic "here's everywhere in this project" map still needs
+   building.
+
+Ending the loop cleanly here — this is a deliberate stop, not one
+running out of things to check.
+
 ## 2026-09-19 — Session 1 continued: figure capture — the schema-only backlog is now empty
 
 - `app/dialogs/figure_capture_dialog.py` (title required, caption
