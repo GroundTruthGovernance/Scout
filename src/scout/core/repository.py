@@ -17,6 +17,7 @@ from scout.core.models import (
     AEVector,
     DW_FIELDS,
     DynamicWorldRecord,
+    Figure,
     LatentSignature,
     Pin,
     Project,
@@ -401,6 +402,45 @@ def list_latent_signatures(
     return conn.execute(
         f"SELECT * FROM latent_signatures WHERE project_key = ? AND {status_clause} ORDER BY created_utc",
         (project_key,),
+    ).fetchall()
+
+
+# ---------------------------------------------------------------------
+# Figures (feeds the session report composer)
+# ---------------------------------------------------------------------
+
+def insert_figure(conn: sqlite3.Connection, figure: Figure) -> None:
+    if figure.order_index == 0:
+        figure.order_index = conn.execute(
+            "SELECT COALESCE(MAX(order_index), 0) + 1 n FROM figures WHERE project_key = ?",
+            (figure.project_key,),
+        ).fetchone()["n"]
+    conn.execute(
+        """INSERT INTO figures
+           (figure_id, project_key, sample_id, response_id, figure_title, caption,
+            image_path, order_index, created_utc)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            figure.figure_id, figure.project_key, figure.sample_id, figure.response_id,
+            figure.figure_title, figure.caption, figure.image_path, figure.order_index,
+            figure.created_utc or utc_now_iso(),
+        ),
+    )
+    conn.commit()
+
+
+def list_figures(
+    conn: sqlite3.Connection, project_key: str, figure_ids: list[str] | None = None
+) -> list[sqlite3.Row]:
+    if figure_ids:
+        placeholders = ", ".join("?" for _ in figure_ids)
+        return conn.execute(
+            f"""SELECT * FROM figures WHERE project_key = ? AND figure_id IN ({placeholders})
+                ORDER BY order_index""",
+            [project_key, *figure_ids],
+        ).fetchall()
+    return conn.execute(
+        "SELECT * FROM figures WHERE project_key = ? ORDER BY order_index", (project_key,)
     ).fetchall()
 
 

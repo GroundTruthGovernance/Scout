@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -377,6 +378,63 @@ def test_save_latent_signature_creates_row(window, tmp_path, monkeypatch):
     assert sigs[0]["vector_norm"] == 1.23456
     assert json.loads(sigs[0]["vector_json"]) == [0.01 * i for i in range(64)]
     assert "signature" in window.status_bar.currentMessage().lower() or "saved" in window.status_bar.currentMessage().lower()
+
+
+def test_new_project_wiring_creates_project_from_dialog_values(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+    from scout.app.dialogs.new_project_dialog import NewProjectDialog
+
+    monkeypatch.setattr(NewProjectDialog, "exec", lambda self: NewProjectDialog.Accepted)
+    monkeypatch.setattr(NewProjectDialog, "values", lambda self: {
+        "project_code": "SOL", "location_code": "RUG", "sublocation_code": "CRK",
+        "project_name": "Calibration",
+    })
+    db_path = str(tmp_path / "new.scout.db")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (db_path, "")))
+
+    window._prompt_new_project()
+
+    assert window.context.project is not None
+    assert window.context.project.project_key == "SOL-RUG-CRK"
+    assert "created" in window.status_bar.currentMessage().lower()
+
+
+def test_new_project_wiring_cancelled_dialog_creates_nothing(window, monkeypatch):
+    from scout.app.dialogs.new_project_dialog import NewProjectDialog
+
+    monkeypatch.setattr(NewProjectDialog, "exec", lambda self: NewProjectDialog.Rejected)
+
+    window._prompt_new_project()
+    assert window.context.project is None
+
+
+def test_compose_session_report_requires_project(window):
+    window._compose_session_report()
+    assert "project" in window.status_bar.currentMessage().lower()
+
+
+def test_compose_session_report_writes_file(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    output_path = str(tmp_path / "out.md")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (output_path, "")))
+
+    window._compose_session_report()
+
+    assert Path(output_path).exists()
+    assert "SOL-RUG-CRK" in Path(output_path).read_text()
+    assert "written to" in window.status_bar.currentMessage().lower()
+
+
+def test_compose_session_report_cancelled_dialog_writes_nothing(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    window.context.new_project(tmp_path / "p.scout.db", "SOL", "RUG", "CRK")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: ("", "")))
+
+    window._compose_session_report()
+    assert not (tmp_path / "p_report.md").exists()
 
 
 def test_draw_polygon_and_add_pin_are_mutually_exclusive(window, tmp_path):

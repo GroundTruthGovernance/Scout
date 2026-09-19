@@ -26,6 +26,91 @@ returns `(tile_url, SimilarityResult)` instead of just the URL — the
 batch queue call site ignores the second value, which cost nothing to
 support. 100/100 tests passing.
 
+### Session report composer
+
+`core/report_composer.py`: `compose_session_report()` assembles whatever
+`Figure` rows exist for a project (in order, with caption/image) plus a
+real Markdown locations table built from every active sample and pin.
+Deliberately **does not** render an overview map image — that needs a
+figure-capture pipeline (map screenshot or an EE `getThumbURL`-style
+render) that doesn't exist yet, and the generated Markdown says so
+explicitly rather than silently omitting it. Wired as
+`Tools > Compose Session Report…`. There's also no UI yet to actually
+*add* a Figure (no screenshot-capture action built tonight), so a fresh
+project's report will currently just be the locations table — still
+genuinely useful (it's exactly "a table of coords" from the original
+ask), just not the full picture yet.
+
+### New Project dialog — closing a real gap, not a stretch item
+
+While wrapping up, noticed `_prompt_new_project()` was still the
+placeholder stub from the very first Qt-shell commit — it picked a file
+path and then just said "identity dialog not yet built," meaning **the
+running app had no way to actually create a new project**, only open an
+existing one (which itself only worked because tests create projects
+directly through `ProjectContext.new_project()`, bypassing the UI
+entirely). Built `app/dialogs/new_project_dialog.py` (project/location/
+sub-location code + optional name, required-field validation blocks
+accept rather than silently creating a malformed project_key) and wired
+it in. This felt more important to fix than any further Task #9 polish
+— a golden path that a user literally cannot start from a blank install
+isn't a golden path yet.
+
+**114/114 tests passing, exit code 0 confirmed.**
+
+## Closing summary — Task 9 (stretch) scope assessment
+
+Task #9 as originally scoped covered: Layers panel richness, pins with
+groups/tags, latent signatures, batch queue, report composer. Where it
+actually landed:
+
+- **Layers panel**: done — grouped/checkable tree, raster-vs-marker kind
+  distinction wired correctly (not just added and forgotten).
+- **Pins**: done for observations (save, marker, layer entry, collision-
+  proof numbering). **Groups and tags remain schema/repository-only** —
+  `pin_groups`/`pin_tags` tables and their DAO functions exist and are
+  tested (`test_repository.py::test_pin_groups_and_tags`), but there's no
+  UI yet to create a group, move a pin into one, or attach a tag. Also
+  still schema-only: multi-dataset **probe** extraction (AE/S2/DW
+  sampling at a point) — only the lighter "observation" pin type actually
+  runs end to end.
+- **Latent signatures**: done — save action, materializes the real
+  vector via one EE round trip, `vector_norm` column added when the gap
+  was noticed.
+- **Batch queue**: done — real queue, real sequential execution sharing
+  the interactive run's own code path, real (confirmed, injectable)
+  post-batch power actions.
+- **Report composer**: skeleton done as scoped — real figures-in-order
+  assembly and a real locations table; overview map image rendering
+  explicitly deferred (needs a figure-capture pipeline that doesn't
+  exist), and said so in the generated output rather than silently
+  producing a report that looks more finished than it is.
+- **Unplanned but fixed**: the New Project dialog, because without it the
+  app couldn't do the one thing it exists to do from a blank install.
+
+This is a reasonable stopping point for tonight's realistic scope. What's
+next, in priority order, isn't more breadth — it's closing the loop on
+what's already built:
+
+1. **The one thing that actually matters most**: a real human, at a real
+   keyboard, with a real Google account, running `scout`, signing in, and
+   checking whether an actual AlphaEarth similarity mask renders on the
+   map. Every commit tonight has been tested against a mocked `ee` module
+   — the real EE round trip has literally never happened in this build.
+2. Pin groups/tags UI (the schema's ready, it's a genuinely separate
+   small feature — a "New Group" action plus drag/right-click assignment
+   — not urgent tonight).
+3. A figure-capture action (screenshot or EE thumbnail render) to give
+   the report composer something to actually assemble beyond the
+   locations table.
+4. Probe (multi-dataset) pin extraction, completing the pin_type the
+   schema already supports.
+
+Nine commits, three green Windows CI runs, 114 tests, zero fabricated
+claims about what's verified vs. simulated — that seemed like the right
+trade to make with the time available rather than reaching for a fourth
+stretch feature and leaving something half-wired.
+
 Running log of what's been built, in what order, and why — kept so an
 autonomous or resumed session can pick up accurately without re-deriving
 context, and so you have a readable trail of the overnight build.

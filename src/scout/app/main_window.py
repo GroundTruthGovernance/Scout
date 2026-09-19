@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from scout.core import repository as repo
 from scout.core.models import LatentSignature, Pin
 from scout.core.power import perform_power_action
+from scout.core.report_composer import compose_session_report
 from scout.core.util import get_ae_vis, utc_now_iso
 from scout._version import SCOUT_VERSION
 
@@ -39,6 +40,7 @@ from scout.app.panels.map_panel import MapPanel
 from scout.app.panels.python_console_panel import PythonConsolePanel
 from scout.app.project_context import ProjectContext
 from scout.app.ee_auth_worker import EarthEngineSignInWorker
+from scout.app.dialogs.new_project_dialog import NewProjectDialog
 
 
 class MainWindow(QMainWindow):
@@ -139,6 +141,7 @@ class MainWindow(QMainWindow):
         # Tools
         self.action_sign_in_ee = QAction("&Sign in to Earth Engine…", self)
         self.action_sign_out_ee = QAction("Sign &out of Earth Engine", self)
+        self.action_compose_report = QAction("&Compose Session Report…", self)
 
         # View
         self.action_clean_map = QAction("&Clean Map Mode", self, checkable=True)
@@ -189,6 +192,7 @@ class MainWindow(QMainWindow):
 
         tools_menu = menu_bar.addMenu("&Tools")
         tools_menu.addAction(self.python_console_dock.toggleViewAction())
+        tools_menu.addAction(self.action_compose_report)
         tools_menu.addSeparator()
         tools_menu.addAction(self.action_sign_in_ee)
         tools_menu.addAction(self.action_sign_out_ee)
@@ -236,6 +240,7 @@ class MainWindow(QMainWindow):
         self.action_add_to_queue.triggered.connect(self._add_current_run_to_queue)
         self.batch_queue_panel.run_queue_requested.connect(self.run_batch_queue)
         self.action_save_latent_signature.triggered.connect(self._save_as_latent_signature)
+        self.action_compose_report.triggered.connect(self._compose_session_report)
 
         self.map_panel.bridge.polygon_drawn.connect(self._on_polygon_drawn)
         self.map_panel.bridge.point_clicked.connect(self._on_point_clicked)
@@ -247,13 +252,28 @@ class MainWindow(QMainWindow):
     # -- File menu handlers -------------------------------------------------
 
     def _prompt_new_project(self) -> None:
+        dialog = NewProjectDialog(self)
+        if dialog.exec() != NewProjectDialog.Accepted:
+            return
+        values = dialog.values()
+        if values is None:
+            return
+
         path, _ = QFileDialog.getSaveFileName(self, "New Scout Project", "", "Scout project (*.scout.db)")
         if not path:
             return
-        # A dedicated project-identity dialog belongs here; deferred so the
-        # golden path (draw -> run -> see a result) isn't blocked on it.
-        # Auto-fill placeholder request; real UI is a follow-up.
-        self.set_status(f"New project file selected: {path} (identity dialog not yet built).")
+
+        try:
+            project = self.context.new_project(
+                path, values["project_code"], values["location_code"],
+                values["sublocation_code"], project_name=values["project_name"],
+            )
+            self.set_status(f"Project {project.project_key} created.")
+            self.refresh_activity_log()
+            self.refresh_attribute_table()
+            self.refresh_batch_queue()
+        except ValueError as exc:
+            QMessageBox.critical(self, "New Project", str(exc))
 
     def _prompt_open_project(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Open Scout Project", "", "Scout project (*.scout.db)")
@@ -567,6 +587,26 @@ class MainWindow(QMainWindow):
         self._refresh_ee_auth_label()
         self.set_status("Signed out of Earth Engine.")
         self.context.log("info", "Earth Engine sign-out.")
+
+    def _compose_session_report(self) -> None:
+        if self.context.project is None:
+            self.set_status("Open or create a project before composing a report.", error=True)
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Compose Session Report", f"{self.context.project.project_key}_report.md",
+            "Markdown (*.md)",
+        )
+        if not path:
+            return
+
+        try:
+            compose_session_report(self.context.conn, self.context.project.project_key, path)
+            self.set_status(f"Session report written to {path}.")
+            self.context.log("info", f"Session report composed: {path}")
+        except Exception as exc:  # noqa: BLE001 — surfaced to the user, not swallowed
+            self.set_status(f"Composing session report failed: {exc}", error=True)
+            self.context.log("error", f"Composing session report failed: {exc}")
 
     def _show_about(self) -> None:
         QMessageBox.about(

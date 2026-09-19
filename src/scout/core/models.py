@@ -153,6 +153,19 @@ class Pin:
 
 
 @dataclass(slots=True)
+class Figure:
+    figure_id: str
+    project_key: str
+    figure_title: str = ""
+    caption: str = ""
+    image_path: str = ""
+    sample_id: str | None = None
+    response_id: str | None = None
+    order_index: int = 0
+    created_utc: str = ""
+
+
+@dataclass(slots=True)
 class LatentSignature:
     signature_id: str
     project_key: str
