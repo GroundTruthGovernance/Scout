@@ -119,6 +119,41 @@ def make_similarity_palette(hex_value: str) -> list[str]:
     ]
 
 
+def build_response_fingerprint(
+    sample_id: str | None,
+    reference_year,
+    target_year,
+    extent_name: str,
+    threshold_mode: str,
+    threshold: float,
+    experiment_id: str = "",
+    hypothesis_id: str = "",
+) -> str:
+    """Matches JS `buildResponseFingerprint()` — identifies a recipe so a
+    repeat run can be flagged ("same recipe already exists as ...") rather
+    than silently duplicated."""
+    recipe = "|".join([
+        sample_id or "NO_SAMPLE",
+        str(reference_year),
+        str(target_year),
+        extent_name,
+        threshold_mode,
+        f"{float(threshold):.6f}",
+        experiment_id,
+        hypothesis_id,
+    ])
+    return f"RF-{simple_hash(recipe)}"
+
+
+def get_ae_vis(cutoff: float, style_name: str, color: str) -> dict:
+    """Vis params for ee.Image.getMapId() / a figure render — matches JS
+    `getAEVis()`. style_name: 'Solid colour' | 'Similarity ramp'."""
+    chosen = normalize_hex_color(color, "FF7F00")
+    if style_name == "Solid colour":
+        return {"min": cutoff, "max": 1, "palette": [chosen]}
+    return {"min": cutoff, "max": 1, "palette": make_similarity_palette(chosen)}
+
+
 MASK_COLOR_PRESETS = {
     "Magenta": "FF00FF",
     "Cyan": "00FFFF",

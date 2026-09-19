@@ -60,3 +60,30 @@ def test_similarity_palette_ends_on_input_color():
 def test_utc_now_iso_format():
     stamp = util.utc_now_iso()
     assert stamp.endswith("Z")
+
+
+def test_build_response_fingerprint_is_deterministic_and_sensitive():
+    common = dict(
+        sample_id="SOL-RUG-CRK-F01-S01", reference_year="2023", target_year="2023",
+        extent_name="Fylde", threshold_mode="Absolute cosine cutoff", threshold=0.9,
+    )
+    fp1 = util.build_response_fingerprint(**common)
+    fp2 = util.build_response_fingerprint(**common)
+    assert fp1 == fp2
+    assert fp1.startswith("RF-")
+
+    fp3 = util.build_response_fingerprint(**{**common, "threshold": 0.91})
+    assert fp3 != fp1
+
+    fp4 = util.build_response_fingerprint(**{**common, "sample_id": None})
+    assert fp4 != fp1  # None sample_id falls back to the "NO_SAMPLE" sentinel, not a crash
+
+
+def test_get_ae_vis_solid_vs_ramp():
+    solid = util.get_ae_vis(0.9, "Solid colour", "#FF7F00")
+    assert solid == {"min": 0.9, "max": 1, "palette": ["FF7F00"]}
+
+    ramp = util.get_ae_vis(0.9, "Similarity ramp", "#FF7F00")
+    assert ramp["min"] == 0.9
+    assert len(ramp["palette"]) == 6
+    assert ramp["palette"][-1] == "FF7F00"

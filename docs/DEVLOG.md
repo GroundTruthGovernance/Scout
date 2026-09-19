@@ -47,5 +47,34 @@ context, and so you have a readable trail of the overnight build.
 - Next: port the EE algorithmic core (cosine similarity, thresholding,
   HSV mask, S2 products) to `core/ee_backend.py` (Task #3).
 
+## 2026-09-19 — Session 1 continued: Earth Engine compute backend
+
+- `src/scout/core/ee_backend.py`: `EarthEngineBackend` class porting
+  sections 2/15/17/22 of the GEE prototype — `load_ae_year`/`load_dw_year`,
+  Sentinel-2 collection/composite/product functions (RGB, false colour,
+  SWIR, NDVI/NDWI/NDMI/BSI/NDRE/NBR/NBR2, individual bands),
+  `get_s2_feature_image` (all bands+indices, for probes), `build_hsv_mask`
+  (including the hue-wraparound And/Or branch), search extents (all named
+  AOI polygons ported verbatim as coordinate lists), `run_similarity` +
+  `build_reference_vector` (the actual cosine-similarity core), and both
+  absolute and percentile thresholding.
+- Takes the `ee` module as a constructor argument (defaults to the real
+  package) specifically so tests can inject a `MagicMock` and verify the
+  *shape* of the computation graph — which collection, which reducer,
+  which bands, and for HSV, which boolean branch — without network access.
+  This sandbox has no Earth Engine credentials at any point in this build,
+  so **live verification against real AlphaEarth/Sentinel-2 data has not
+  happened and needs to happen on your machine** once the auth flow
+  (Task #7) exists. Confirmed `import ee` itself works with zero
+  credentials (only `ee.Initialize()`/actual server calls need auth), so
+  the app can at least start and show a "sign in" prompt cleanly.
+  `build_response_fingerprint` and `get_ae_vis` (vis-params dict for
+  `getMapId`) added to `core/util.py` alongside the existing helpers, since
+  both are pure Python with no EE dependency.
+- **37/37 tests passing.** Notably the HSV hue-wraparound test would
+  actually fail if the And/Or branch were wired backwards — verified by
+  briefly swapping the condition and confirming the test catches it.
+- Next: Qt shell (Task #4) — main window, menu bar, dock panel stubs.
+
 <!-- New entries go above this line, most recent first is fine as long as
      each entry is dated and self-contained. -->
