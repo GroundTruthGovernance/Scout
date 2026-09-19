@@ -1,0 +1,2 @@
+SCOUT_VERSION = "0.1.0-dev"
+SCHEMA_VERSION = "3"
